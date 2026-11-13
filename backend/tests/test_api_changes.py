@@ -36,6 +36,8 @@ def change(client, trip, body):
 
 def assert_refused(client, trip, status, body):
     assert status == 422 and body["code"] == "CHANGE_REFUSED" and body["error"].strip(), body
+    assert body["reasons"] and body["error"] == body["reasons"][0]
+    assert isinstance(body["blockers"], list)
     assert client.get(f"/api/packages/{trip['trip_id']}").json() == trip  # unchanged
 
 
@@ -76,6 +78,7 @@ def test_change_hotel_to_sold_out_room_refused(client, pkg):
     status, body = change(client, pkg, {"action": "change_hotel", "city": city, "hotel_id": room["hotel_id"],
                                         "room_id": room["room_id"]})
     assert_refused(client, pkg, status, body)
+    assert body["blockers"][0]["code"] == "HOTEL_SOLD_OUT" and body["blockers"][0]["part"] == "hotel"
 
 
 def test_change_hotel_to_room_travelers_do_not_fit_refused(client, pkg):

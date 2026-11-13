@@ -37,6 +37,14 @@ def test_broken_rule_is_reported(menon_trip, cat, name):
     assert code in codes(menon_trip, cat)
 
 
+def test_edited_package_may_have_an_empty_full_day(menon_trip, cat):
+    # "1-2 attractions on every full day" applies to the first package only
+    code, mutate = MUTATIONS["full_day_without_attraction"]
+    mutate(menon_trip)
+    assert code in codes(menon_trip, cat)
+    assert validate(menon_trip, cat, first_package=False) == []
+
+
 @pytest.mark.parametrize("field", ["item_id", "type", "catalog_id", "price_inr", "start"])
 def test_item_missing_a_required_field(menon_trip, cat, field):
     del item(menon_trip, "i5")[field]

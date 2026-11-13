@@ -208,6 +208,64 @@ def test_no_possible_package_says_why(client, req):
     body = r.json()
     assert body["code"] == "NO_PACKAGE" and body["error"].strip()
     assert body["reasons"] and all(isinstance(x, str) and x.strip() for x in body["reasons"])
+    assert_reasons_and_recommendation(client, req, body)
+
+
+BLOCKER_CODES = {"NO_ARRIVAL_FLIGHT", "ARRIVAL_SEATS", "NO_RETURN_FLIGHT", "RETURN_SEATS", "NO_ROOM_FITS",
+                 "HOTEL_SOLD_OUT", "NO_AIRPORT_TRANSFER", "ARRIVAL_TOO_LATE", "RETURN_TOO_EARLY", "NO_INTERCITY",
+                 "NOT_ENOUGH_ATTRACTIONS"}
+
+
+def assert_reasons_and_recommendation(client, req, body):
+    """Every 422 says why and what to change; each alternative it offers really builds (docs/API.md)."""
+    assert body["suggestion"].strip()
+    if body["code"] == "NO_PACKAGE":
+        assert body["error"] == body["reasons"][0]
+        assert [b["message"] for b in body["blockers"]] == body["reasons"]
+        assert all(b["code"] in BLOCKER_CODES and b["part"] in {"flight", "hotel", "transfer", "attraction"}
+                   for b in body["blockers"])
+    for alt in body["alternatives"]:
+        r = client.post("/api/packages/search", json=dict(req, **alt["change"]))
+        assert r.status_code == 201, (alt, r.text)
+        assert r.json()["total_inr"] == alt["total_inr"]
+
+
+def test_no_flight_that_day_offers_another_date_or_city(client):
+    req = NO_PACKAGE["no_flight_lands_that_day"]
+    body = client.post("/api/packages/search", json=req).json()
+    assert body["blockers"][0]["code"] == "NO_ARRIVAL_FLIGHT"
+    assert body["alternatives"]
+    assert all(set(a["change"]) <= {"start_date", "nights", "departure_city"} for a in body["alternatives"])
+
+
+def test_group_too_large_for_any_flight_has_no_alternative(client):
+    body = client.post("/api/packages/search", json=NO_PACKAGE["very_large_group"]).json()
+    assert body["blockers"][0]["code"] == "ARRIVAL_SEATS"
+    assert body["alternatives"] == [] and body["suggestion"].strip()
+
+
+# ---------- 1. search: any request gets a correct package or a reason (the judges' unseen requests) ----------
+
+SWEEP = [request(dep, country, f"2027-04-{day:02d}", nights, adults, ages, 2000000)
+         for dep in ("BLR", "DEL", "BOM", "MAA")
+         for country in ("Japan", "United Arab Emirates")
+         for day in (1, 9, 17)
+         for nights in (3, 6, 10)
+         for adults, ages in ((1, ()), (4, (3, 11)))]
+
+
+@pytest.mark.parametrize("req", SWEEP, ids=lambda r: "{departure_city}-{country}-{start_date}-{nights}n-{adults}a".format(**r))
+def test_sweep_every_answer_is_a_correct_package_or_a_reason(client, req):
+    r = client.post("/api/packages/search", json=req)
+    body = r.json()
+    if r.status_code == 201:
+        assert check(body, CAT) == []
+    elif r.status_code == 400:  # the return day is after 20 April
+        assert body["code"] == "INVALID_REQUEST" and body["field"] == "start_date"
+    else:
+        assert r.status_code == 422 and body["code"] == "NO_PACKAGE", r.text
+        assert body["reasons"] and body["suggestion"].strip()
+        assert all(b["code"] in BLOCKER_CODES for b in body["blockers"])
 
 
 # ---------- 1. search: budget too small (M8) ----------
@@ -221,6 +279,9 @@ def test_budget_too_small_shows_cheapest_and_suggestion(client):
     assert body["cheapest_total_inr"] > 10000
     assert body["over_by_inr"] == body["cheapest_total_inr"] - 10000
     assert body["suggestion"].strip()
+    assert {"change": {"budget_inr": body["cheapest_total_inr"]},
+            "total_inr": body["cheapest_total_inr"]} in body["alternatives"]
+    assert_reasons_and_recommendation(client, dict(MENON, budget_inr=10000), body)
 
 
 def test_cheapest_total_is_really_buildable(client):

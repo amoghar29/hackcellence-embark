@@ -1,0 +1,151 @@
+"""Turns a selection (which flights, rooms, transfers and visits, and when) into the Package of docs/API.md.
+
+A selection is what the builder chooses and what the database stores:
+  {"arrival": {"flight_id", "transfer_id", "pickup"}, "return": {...same},
+   "stays": [{"hotel_id", "room_id", "rooms", "check_in", "check_out"}],      in city order
+   "intercity": [{"transfer_id", "pickup"}], "attractions": [{"attraction_id", "start"}]}
+Names, prices and details always come from the catalog, so a package read back from the database is identical.
+Item ids say what the item is (flight-arrival, hotel-1, attraction-ATT-TYO-001) and stay the same when
+another item is changed or removed.
+"""
+from datetime import date, timedelta
+
+from app.core.timeutil import fmt
+from app.services import pricing
+
+UI_ONLY = ("nights", "cities", "remaining_inr", "days")
+
+
+def assemble(trip_id, request, selection, cat, reference=None):
+    A, C = request["adults"], len(request["child_ages"])
+    N = A + C
+    home = request["departure_city"]
+    tz = cat.country(request["country"])["timezone"]
+    status = "BOOKED" if reference else "PLANNED"
+    items = []
+
+    def add(item_id, type_, name, city, catalog_id, start, end, quantity, price, details, room_id=None, **extra):
+        items.append({"item_id": item_id, "type": type_, "name": name, "city": city, "status": status,
+                      "catalog_id": catalog_id, "room_id": room_id, "start": start, "end": end,
+                      "quantity": quantity, "price_inr": price,
+                      "booking": {"reference": reference} if reference else None,
+                      "sources": [], "warnings": [], "details": details, **extra})
+
+    stays = selection["stays"]
+    hotels = [cat.hotels[s["hotel_id"]] for s in stays]
+
+    for direction, leg, city in (("ARRIVAL", selection["arrival"], hotels[0]["city"]),
+                                 ("RETURN", selection["return"], cat.home_city(home))):
+        f = cat.flights[leg["flight_id"]]
+        add(f"flight-{direction.lower()}", "flight", f"{f['flight_number']} {f['from_airport']} to {f['to_airport']}", city, f["flight_id"],
+            fmt(f["departure_local"]), fmt(f["arrival_local"]), N, pricing.flight_price(f, N),
+            {"direction": direction, "airline": f["airline"], "flight_number": f["flight_number"],
+             "from_airport": f["from_airport"], "to_airport": f["to_airport"], "stops": f["stops"],
+             # the catalog's elapsed time (time-zone change and layover included), never arrival minus departure
+             "duration_minutes": f["duration_minutes"], "price_per_seat_inr": f["price_inr"]})
+
+    transfers = [("transfer-arrival", "AIRPORT_ARRIVAL", selection["arrival"]),
+                 ("transfer-return", "AIRPORT_RETURN", selection["return"])]
+    transfers += [(f"transfer-city-{n}", "INTERCITY", leg) for n, leg in enumerate(selection["intercity"], 1)]
+    for item_id, kind, leg in transfers:
+        t = cat.transfers[leg["transfer_id"]]
+        add(item_id, "transfer", t["name"], t["city"] or t["to_city"], t["transfer_id"], fmt(leg["pickup"]),
+            fmt(leg["pickup"] + timedelta(minutes=t["duration_minutes"])), pricing.transfer_quantity(t, A, C),
+            pricing.transfer_price(t, A, C),
+            {"kind": kind, "transfer_type": t["type"], "from_point": t["from_point"], "to_point": t["to_point"],
+             "duration_minutes": t["duration_minutes"], "pricing": t["pricing"]})
+
+    for n, (s, h) in enumerate(zip(stays, hotels), 1):
+        room = cat.rooms[s["room_id"]]
+        nights = (s["check_out"] - s["check_in"]).days
+        add(f"hotel-{n}", "hotel", h["name"], h["city"], h["hotel_id"], s["check_in"].isoformat(), s["check_out"].isoformat(),
+            s["rooms"], pricing.hotel_price(room, s["rooms"], nights),
+            {"area": h["area"], "stars": h["stars"], "rating": h["rating"], "room_type": room["room_type"],
+             "room_name": room["name"], "rooms": s["rooms"], "nights": nights, "price_per_night_inr": room["price_inr"],
+             "check_in_from": h["check_in_from"], "check_out_until": h["check_out_until"], "image": "/" + h["image"]},
+            room_id=room["room_id"])
+
+    for visit in selection["attractions"]:
+        a = cat.attractions[visit["attraction_id"]]
+        add(f"attraction-{a['attraction_id']}", "attraction", a["name"], a["city"], a["attraction_id"], fmt(visit["start"]),
+            fmt(visit["start"] + timedelta(minutes=a["visit_minutes"])), N, pricing.attraction_price(a, A, C),
+            {"category": a["category"], "visit_minutes": a["visit_minutes"], "open_from": a["open_from"],
+             "open_until": a["open_until"], "child_friendly": a["child_friendly"], "image": "/" + a["image"]})
+
+    items.sort(key=lambda i: (i["start"], i["item_id"]))
+    total = sum(i["price_inr"] for i in items)
+    trip = {
+        "trip_id": trip_id, "status": status, "reference": reference,
+        "traveler": {"name": None, "home_airport": home, "adults": A, "children": C,
+                     "child_ages": list(request["child_ages"])},
+        "country": request["country"],
+        "start_date": request["start_date"].isoformat(), "end_date": request["end_date"].isoformat(),
+        "nights": request["nights"],
+        "cities": [{"city": h["city"], "nights": (s["check_out"] - s["check_in"]).days,
+                    "check_in": s["check_in"].isoformat(), "check_out": s["check_out"].isoformat()}
+                   for s, h in zip(stays, hotels)],
+        "budget_inr": request["budget_inr"], "total_inr": total, "remaining_inr": request["budget_inr"] - total,
+        "items": items,
+    }
+    trip["days"] = _days(trip, selection, cat, tz)
+    return trip
+
+
+def export(trip):
+    """The judges' shared trip format: the package without the UI-only fields."""
+    out = {k: v for k, v in trip.items() if k not in UI_ONLY}
+    out["items"] = [{k: v for k, v in i.items() if k != "details"} for i in trip["items"]]
+    return out
+
+
+def _days(trip, selection, cat, tz):
+    """One entry per calendar date. Each event's time is local to where it happens; `timezone` says where."""
+    start, end = trip["start_date"], trip["end_date"]
+    events = {}  # date -> [(time, kind, item_id, title, timezone)]
+
+    def event(when, kind, it, title, zone):
+        events.setdefault(when[:10], []).append(
+            {"time": when[11:16], "kind": kind, "item_id": it["item_id"], "title": title, "timezone": zone})
+
+    pickups = {}  # date -> earliest pickup that day, to check out in time
+    for it in trip["items"]:
+        if it["type"] == "transfer":
+            pickups[it["start"][:10]] = min(pickups.get(it["start"][:10], "99:99"), it["start"][11:16])
+    for it in trip["items"]:
+        d = it["details"]
+        if it["type"] == "flight":
+            f = cat.flights[it["catalog_id"]]
+            stops = "direct" if f["stops"] == 0 else f"{f['stops']} stop"
+            event(it["start"], "FLIGHT_DEPARTURE", it, f"Depart {f['from_airport']}: {it['name']} ({stops})",
+                  cat.airports[f["from_airport"]]["timezone"])
+            event(it["end"], "FLIGHT_ARRIVAL", it, f"Land at {f['to_airport']}: {it['name']}",
+                  cat.airports[f["to_airport"]]["timezone"])
+        elif it["type"] == "transfer":
+            event(it["start"], "TRANSFER", it, f"{it['name']} ({d['from_point']} to {d['to_point']})", tz)
+        elif it["type"] == "attraction":
+            event(it["start"], "ATTRACTION", it, it["name"], tz)
+        else:
+            out_time = min(d["check_out_until"], pickups.get(it["end"], "99:99"))
+            event(f"{it['start']}T{d['check_in_from']}", "CHECK_IN", it, f"Check in: {it['name']}", tz)
+            event(f"{it['end']}T{out_time}", "CHECK_OUT", it, f"Check out: {it['name']}", tz)
+
+    night_city = {}
+    for c in trip["cities"]:
+        day = date.fromisoformat(c["check_in"])
+        while day.isoformat() < c["check_out"]:
+            night_city[day.isoformat()] = c["city"]
+            day += timedelta(1)
+    change_days = {c["check_in"] for c in trip["cities"][1:]}
+    first, last = min(min(events), start), max(max(events), end)
+    days, day = [], date.fromisoformat(first)
+    while day.isoformat() <= last:
+        iso = day.isoformat()
+        day_type = ("TRAVEL" if iso < start else "ARRIVAL" if iso == start else "HOME" if iso > end
+                    else "RETURN" if iso == end else "CITY_CHANGE" if iso in change_days else "FULL")
+        city = None if day_type in ("TRAVEL", "HOME") else trip["cities"][-1]["city"] if day_type == "RETURN" \
+            else night_city[iso]
+        days.append({"date": iso, "day_type": day_type, "city": city,
+                     "events": sorted(events.get(iso, []), key=lambda e: e["time"])})
+        day += timedelta(1)
+    return days
+
