@@ -10,6 +10,7 @@ Backend: FastAPI at `http://localhost:8000`. All bodies are JSON. All prices are
 |---|---|---|---|
 | Form | `GET /api/options` | Dropdown values and limits for the request form | 1 |
 | **1. Search** | `POST /api/packages/search` | Build a package from the request and save it | 1 |
+| | `POST /api/packages/results` | Like search, but returns every package that fits (up to 30), cheapest first | 1 |
 | | `GET /api/packages/{trip_id}` | Reopen a saved package (page refresh) | 1 |
 | **2. Book** | `POST /api/packages/{trip_id}/book` | Confirm; returns the 10-digit reservation number | 1 |
 | | `GET /api/reservations/{reference}` | Open a reservation by its number | 1 |
@@ -171,6 +172,10 @@ Responses:
     ] }
   ```
   When fewer nights fit the current budget, that is offered too: `"suggestion": "Raise the budget to ₹2,66,378, or take 4 nights (₹1,98,400)."` with `{ "change": { "nights": 4 }, "total_inr": 198400 }` in `alternatives`.
+
+### `POST /api/packages/results`
+
+Same request and same errors (400, 422 `NO_PACKAGE`, 422 `OVER_BUDGET`) as search. **201** `{ "count": 27, "packages": [ Package, ... ] }`: one package per city plan (route and split of the nights) that passes every travel rule and fits the budget, cheapest first, at most 30. Every package is saved with `status: "PLANNED"`, so each `trip_id` opens with `GET /api/packages/{trip_id}`. The UI pages the list.
 
 ### `GET /api/packages/{trip_id}`
 

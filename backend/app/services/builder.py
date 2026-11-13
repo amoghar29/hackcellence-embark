@@ -289,13 +289,13 @@ def _country_flights(request, cat):
     return None
 
 
-def _cheapest(request, cat):
-    """((trip, selection), None) for the cheapest package that passes every rule, ignoring the budget;
-    else (None, blockers)."""
+def _valid(request, cat, limit=1):
+    """([(trip, selection)], None): up to `limit` packages that pass every rule, ignoring the budget,
+    cheapest first; else ([], blockers)."""
     blocker = _country_flights(request, cat)
     if blocker:
-        return None, [blocker]
-    built, blocked = [], []
+        return [], [blocker]
+    built, blocked, valid = [], [], []
     for plan in city_plans(request["country"], request["nights"], cat):
         try:
             built.append(_plan(request, plan, cat))
@@ -305,10 +305,15 @@ def _cheapest(request, cat):
         trip = package.assemble(None, request, selection, cat)
         problems = validator.validate(trip, cat)  # the gate: nothing leaves without passing every rule
         if not problems:
-            return (trip, selection), None
+            valid.append((trip, selection))
+            if len(valid) >= limit:
+                break
+            continue
         log.error("built package failed the rule check and was dropped: %s", problems)
         blocked.append({"code": "RULE_CHECK", "part": "flight",
                         "message": "A package was built but failed the rule check, so it was not returned."})
+    if valid:
+        return valid, None
     if not blocked:
         blocked = [{"code": "NO_CITY_PLAN", "part": "hotel", "message": "No city plan fits the number of nights."}]
     # reasons shared by the most plans that got furthest come first
@@ -317,7 +322,14 @@ def _cheapest(request, cat):
         count[(b["code"], b["message"])] = count.get((b["code"], b["message"]), 0) + 1
     unique = {(b["code"], b["message"]): b for b in blocked}
     order = sorted(unique, key=lambda k: (-STAGES.index(k[0]), -count[k], k[1]))
-    return None, [unique[k] for k in order[:5]]
+    return [], [unique[k] for k in order[:5]]
+
+
+def _cheapest(request, cat):
+    """((trip, selection), None) for the cheapest package that passes every rule, ignoring the budget;
+    else (None, blockers)."""
+    valid, blockers = _valid(request, cat)
+    return (valid[0], None) if valid else (None, blockers)
 
 
 def _nearby(request, cat):
@@ -354,10 +366,24 @@ def build(request, cat):
 def build_selection(request, cat):
     """build(), plus the selection behind the package (what the database stores)."""
     found, blockers = _cheapest(request, cat)
-    budget = request["budget_inr"]
-    if found and found[0]["total_inr"] <= budget:
+    if found and found[0]["total_inr"] <= request["budget_inr"]:
         return found
+    _fail(request, cat, found, blockers)
 
+
+def build_many(request, cat, limit=30):
+    """[(trip, selection)]: up to `limit` packages that pass every rule and fit the budget, cheapest first
+    (one per city plan). Raises NoPackage or OverBudget exactly like build_selection."""
+    valid, blockers = _valid(request, cat, limit)
+    fits = [f for f in valid if f[0]["total_inr"] <= request["budget_inr"]]
+    if fits:
+        return sorted(fits, key=lambda f: f[0]["total_inr"])
+    _fail(request, cat, valid[0] if valid else None, blockers)
+
+
+def _fail(request, cat, found, blockers):
+    """Always raises: OverBudget when `found` (the cheapest package) exceeds the budget, else NoPackage."""
+    budget = request["budget_inr"]
     if found:  # packages exist, none fits the budget (M8)
         cheapest = found[0]["total_inr"]
         alternatives = [{"change": {"budget_inr": cheapest}, "total_inr": cheapest}]

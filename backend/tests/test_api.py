@@ -506,6 +506,22 @@ def test_reservation_opens_the_booked_package(client):
     assert client.get(f"/api/packages/{pkg['trip_id']}").json() == booked["package"]
 
 
+def test_my_bookings_lists_only_booked_packages_newest_first(client):
+    before = client.get("/api/reservations").json()["reservations"]
+    planned = search(client)
+    first, second = search(client), search(client)
+    for p in (first, second):
+        client.post(f"/api/packages/{p['trip_id']}/book", headers=key())
+    got = client.get("/api/reservations")
+    assert got.status_code == 200
+    refs = [r["reference"] for r in got.json()["reservations"]]
+    assert len(refs) == len(before) + 2
+    ids = [r["trip_id"] for r in got.json()["reservations"]]
+    assert planned["trip_id"] not in ids
+    assert ids[:2] == [second["trip_id"], first["trip_id"]]
+    assert all(r["status"] == "BOOKED" for r in got.json()["reservations"])
+
+
 def test_booking_twice_keeps_the_reference(client):
     pkg = search(client)
     first = client.post(f"/api/packages/{pkg['trip_id']}/book", headers=key()).json()["reference"]

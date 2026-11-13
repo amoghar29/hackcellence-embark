@@ -22,6 +22,13 @@ def search(service: PackageServiceDep, body: Annotated[Any, Body()] = None) -> d
     return service.search(body)
 
 
+@router.post("/results", status_code=status.HTTP_201_CREATED, openapi_extra={"requestBody": {
+    "required": True, "content": {"application/json": {"schema": SearchRequest.model_json_schema()}}}})
+def search_results(service: PackageServiceDep, body: Annotated[Any, Body()] = None) -> dict:
+    packages = service.search_many(body)
+    return {"count": len(packages), "packages": packages}
+
+
 @router.get("/{trip_id}")
 def get_package(trip_id: str, service: PackageServiceDep) -> dict:
     return service.get(trip_id)

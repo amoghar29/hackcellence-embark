@@ -31,6 +31,16 @@ class PackageService:
                  request["country"], request["start_date"], request["nights"], trip["total_inr"])
         return self.get(trip_id)
 
+    def search_many(self, raw: Any, limit: int = 30) -> list[dict]:
+        """Every package that fits (one per city plan), cheapest first, each saved. Same errors as search()."""
+        request = validate_request(raw, self._cat)
+        code = self._cat.country(request["country"])["code"]
+        built = builder.build_many(request, self._cat, limit)
+        ids = [self._repo.save(request, selection, trip, code) for trip, selection in built]
+        log.info("Search saved %d packages: %s to %s, %s, %d nights", len(ids), request["departure_city"],
+                 request["country"], request["start_date"], request["nights"])
+        return [self.get(i) for i in ids]
+
     def open(self, trip_id: str) -> SavedPackage:
         found = self._repo.load(trip_id)
         if not found:
@@ -55,6 +65,9 @@ class PackageService:
             raise NotFound("Package")
         log.info("Package %s booked as %s", trip_id, reference)
         return reference, self.get(trip_id)
+
+    def reservations(self) -> list[dict]:
+        return [self.get(i) for i in self._repo.booked_trip_ids()]
 
     def reservation(self, reference: str) -> dict:
         trip_id = self._repo.trip_id_for(reference) if reference.isdigit() and len(reference) == 10 else None

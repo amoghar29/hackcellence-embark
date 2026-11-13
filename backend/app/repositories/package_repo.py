@@ -96,6 +96,11 @@ class PackageRepository:
                     if e.diag.constraint_name == "bookings_idempotency_key_key":  # another package took the key meanwhile
                         raise IdempotencyKeyReused()
 
+    def booked_trip_ids(self) -> list[str]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT id FROM bookings WHERE status = 'BOOKED' ORDER BY updated_at DESC, id").fetchall()
+            return [r["id"] for r in rows]
+
     def trip_id_for(self, reference: str) -> str | None:
         with self._connect() as conn:
             row = conn.execute("SELECT id FROM bookings WHERE reference = %s", (reference,)).fetchone()

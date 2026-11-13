@@ -223,3 +223,6 @@ __marimo__/
 node_modules/
 .vite/
 npm-debug.log*
+
+# keep the frontend source lib folder (the Python "lib/" rule above would hide it)
+!frontend/src/lib/
