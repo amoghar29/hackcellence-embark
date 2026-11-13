@@ -17,7 +17,6 @@ CAT = load_catalog()
 REQUIRED_TRIP = {"trip_id", "traveler", "start_date", "end_date", "country", "budget_inr", "total_inr", "items"}
 REQUIRED_ITEM = {"item_id", "type", "name", "city", "status", "catalog_id", "start", "end",
                  "room_id", "quantity", "price_inr", "booking", "sources"}
-UI_ONLY_TRIP = {"nights", "cities", "remaining_inr", "days"}
 DETAILS = {
     "flight": {"direction", "airline", "flight_number", "from_airport", "to_airport", "stops",
                "duration_minutes", "price_per_seat_inr"},
@@ -298,7 +297,7 @@ def test_cheapest_total_is_really_buildable(client):
     assert r.status_code == 422 and r.json()["code"] == "OVER_BUDGET"
 
 
-# ---------- 1. saved package, export ----------
+# ---------- 1. saved package ----------
 
 def test_package_is_saved(client):
     pkg = search(client)
@@ -316,29 +315,6 @@ def test_package_survives_backend_restart(client):
 
 def test_unknown_package_not_found(client):
     assert_not_found(client.get("/api/packages/does-not-exist"))
-
-
-def test_export_is_the_shared_trip_format(client):
-    pkg = search(client)
-    r = client.get(f"/api/packages/{pkg['trip_id']}/export")
-    assert r.status_code == 200
-    assert "attachment" in r.headers["content-disposition"]
-    assert f"trip-{pkg['trip_id']}.json" in r.headers["content-disposition"]
-    trip = r.json()
-    assert REQUIRED_TRIP <= trip.keys()
-    assert not UI_ONLY_TRIP & trip.keys()
-    assert trip["country"] == "Japan"
-    assert check(trip, CAT) == []
-    assert trip["total_inr"] == sum(i["price_inr"] for i in trip["items"])
-    for it in trip["items"]:
-        assert REQUIRED_ITEM <= it.keys() and "details" not in it
-        assert it["sources"] == []
-        assert (it["room_id"] is not None) == (it["type"] == "hotel")
-    assert [i["item_id"] for i in trip["items"]] == [i["item_id"] for i in pkg["items"]]
-
-
-def test_export_unknown_package_not_found(client):
-    assert_not_found(client.get("/api/packages/does-not-exist/export"))
 
 
 # ---------- day-by-day plan (M4) ----------
@@ -528,15 +504,6 @@ def test_reservation_opens_the_booked_package(client):
     r = client.get(f"/api/reservations/{booked['reference']}")
     assert r.status_code == 200 and r.json() == booked["package"]
     assert client.get(f"/api/packages/{pkg['trip_id']}").json() == booked["package"]
-
-
-def test_export_after_booking_is_booked(client):
-    pkg = search(client)
-    ref = client.post(f"/api/packages/{pkg['trip_id']}/book", headers=key()).json()["reference"]
-    trip = client.get(f"/api/packages/{pkg['trip_id']}/export").json()
-    assert trip["status"] == "BOOKED"
-    assert all(i["status"] == "BOOKED" and i["booking"] == {"reference": ref} for i in trip["items"])
-    assert check(trip, CAT) == []
 
 
 def test_booking_twice_keeps_the_reference(client):

@@ -11,7 +11,6 @@ Backend: FastAPI at `http://localhost:8000`. All bodies are JSON. All prices are
 | Form | `GET /api/options` | Dropdown values and limits for the request form | 1 |
 | **1. Search** | `POST /api/packages/search` | Build a package from the request and save it | 1 |
 | | `GET /api/packages/{trip_id}` | Reopen a saved package (page refresh) | 1 |
-| | `GET /api/packages/{trip_id}/export` | Download the package as the judges' JSON file | 1 |
 | **2. Book** | `POST /api/packages/{trip_id}/book` | Confirm; returns the 10-digit reservation number | 1 |
 | | `GET /api/reservations/{reference}` | Open a reservation by its number | 1 |
 | **3. Parts** | `GET /api/packages/{trip_id}/flights` | The package's flights | 1 |
@@ -176,10 +175,6 @@ Responses:
 ### `GET /api/packages/{trip_id}`
 
 **200**: the [Package](#the-package-object). **404** `NOT_FOUND`. Keep `trip_id` in the URL (for example `#/package/{trip_id}`) so a page refresh reopens it.
-
-### `GET /api/packages/{trip_id}/export`
-
-**200**: the shared trip format file (`Content-Disposition: attachment; filename="trip-{trip_id}.json"`). Same top-level fields and items as the Package, without the UI-only fields (`nights`, `cities`, `remaining_inr`, `days`, item `details`). Use a plain link or `<a download>`.
 
 ---
 
@@ -401,6 +396,6 @@ A change that breaks a rule with no blocker code (for example two visits that ov
    - 400: show `error` next to `field`.
    - 422 `NO_PACKAGE`: show `error`, `reasons` and `suggestion`. Offer each entry of `alternatives` as a button that searches again with that change.
    - 422 `OVER_BUDGET`: show the cheapest total, the gap and `suggestion`, with the same buttons for `alternatives`.
-3. Package page: render `days` and the item cards; show `total_inr`, `budget_inr` and `remaining_inr`. A card click calls the detail endpoint with its `catalog_id`. Add an Export link to `/export` and a Book button.
+3. Package page: render `days` and the item cards; show `total_inr`, `budget_inr` and `remaining_inr`. A card click calls the detail endpoint with its `catalog_id`. Add a Book button.
 4. Book: `POST .../book`, then go to `#/reservation/{reference}`.
 5. Reservation page: `GET /api/reservations/{reference}`. On 404 show "Reservation not found".

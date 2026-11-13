@@ -1,7 +1,7 @@
 from datetime import date
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Body, Header, Query, Response, status
+from fastapi import APIRouter, Body, Header, Query, status
 
 from app.api.deps import ChangeServiceDep, PackageServiceDep
 from app.schemas.change import Change
@@ -30,13 +30,6 @@ def get_package(trip_id: str, service: PackageServiceDep) -> dict:
 @router.patch("/{trip_id}")
 def change_package(trip_id: str, change: Annotated[Change, Body()], service: ChangeServiceDep) -> dict:
     return service.apply(trip_id, change.model_dump())
-
-
-@router.get("/{trip_id}/export")
-def export(trip_id: str, response: Response, service: PackageServiceDep) -> dict:
-    trip = service.export(trip_id)
-    response.headers["Content-Disposition"] = f'attachment; filename="trip-{trip_id}.json"'
-    return trip
 
 
 @router.post("/{trip_id}/book")

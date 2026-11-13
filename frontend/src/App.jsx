@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { bookingKey } from './lib/idempotency'
 import { ArrowLeft, ArrowRight, ArrowUpDown, BadgeCheck, CalendarDays, Check, ChevronDown, CircleHelp, Compass, Heart, Hotel, Luggage, MapPin, Menu, Plane, Search, ShieldCheck, Star, Ticket, Users, Wallet, X } from 'lucide-react'
 import { Button } from './components/ui/button'
 import { Card, CardContent } from './components/ui/card'
@@ -21,6 +22,7 @@ function App() {
   const [booking, setBooking] = useState(false)
   const [showAll, setShowAll] = useState(false)
   const [toast, setToast] = useState('')
+  const bookingKeys = useRef(bookingKey())
 
   useEffect(() => { fetch(`${API}/api/options`).then(r => r.ok ? r.json() : null).then(data => { if (data) setOptions(data) }).catch(() => {}) }, [])
   useEffect(() => { const id = window.location.hash.match(/package\/([^/?]+)/)?.[1]; if (id) loadPackage(id) }, [])
@@ -43,8 +45,8 @@ function App() {
   async function bookTrip() {
     if (!pkg) return
     setBooking(true); setError(null)
-    try { const response = await fetch(`${API}/api/packages/${pkg.trip_id}/book`, { method: 'POST' }); const data = await response.json(); if (!response.ok) throw data; setPkg(data.package); setToast(`You’re booked! Reservation ${data.reference}`) }
-    catch (e) { setError(e?.error || 'We couldn’t confirm this booking. Please try again.') }
+    try { const response = await fetch(`${API}/api/packages/${pkg.trip_id}/book`, { method: 'POST', headers: { 'Idempotency-Key': bookingKeys.current.get(pkg.trip_id) } }); const data = await response.json(); if (!response.ok) throw data; bookingKeys.current.clear(); setPkg(data.package); setToast(`You’re booked! Reservation ${data.reference}`) }
+    catch (e) { if (e?.code === 'IDEMPOTENCY_KEY_REUSED') bookingKeys.current.clear(); setError(e?.error || 'We couldn’t confirm this booking. Please try again.') }
     finally { setBooking(false) }
   }
   const items = pkg?.items || []
@@ -59,7 +61,7 @@ function App() {
   function startSearch(destination) { update('country', destination.country); document.querySelector('#trip-search')?.scrollIntoView({ behavior: 'smooth', block: 'center' }) }
 
   return <div className="app-shell">
-    <header className="navbar topbar"><a className="brand" href="#" onClick={() => { setPkg(null); window.location.hash = '' }}><span className="brand-mark"><Compass size={20}/></span>embark<span className="brand-period">.</span></a><nav className="desktop-nav"><a href="#destinations">Discover</a><a href="#how-it-works">How it works</a><a href="#help">Help</a></nav><div className="nav-actions"><button className="currency-pill" aria-label="Currency Indian Rupee">₹ <ChevronDown size={14}/></button><Button variant="ghost" className="nav-signin">Sign in</Button><Button variant="outline" className="nav-register">Create account</Button><button className="mobile-menu" aria-label="Open menu"><Menu size={20}/></button></div></header>
+    <header className="navbar topbar"><a className="brand" href="#" onClick={() => { setPkg(null); window.location.hash = '' }}><span className="brand-mark"><Compass size={20}/></span>embark<span className="brand-period">.</span></a><nav className="desktop-nav"><a href="#destinations">Discover</a><a href="#how-it-works">How it works</a><a href="#help">Help</a></nav><div className="nav-actions"><button className="currency-pill" aria-label="Currency Indian Rupee">₹ <ChevronDown size={14}/></button><button className="mobile-menu" aria-label="Open menu"><Menu size={20}/></button></div></header>
 
     {!pkg && <>
       <section className="hero"><div className="hero-image"/><div className="hero-shade"/><div className="hero-content"><span className="eyebrow">YOUR NEXT GREAT STORY STARTS HERE</span><h1>Go places.<br/><em>Feel everything.</em></h1><p>Thoughtful holidays, made just for you.<br className="desktop-break"/> One search. Every detail taken care of.</p><div className="hero-trust"><span><ShieldCheck size={16}/> Your trip, thoughtfully planned</span><span><BadgeCheck size={16}/> No hidden surprises</span></div></div><div className="hero-stamp"><span>MADE FOR<br/>THE WAY<br/><b>YOU TRAVEL</b></span><ArrowRight size={18}/></div></section>
@@ -71,7 +73,7 @@ function App() {
           <label className="field compact-field"><span className="field-label"><Luggage size={15}/> NIGHTS</span><select value={form.nights} onChange={e => update('nights', e.target.value)} aria-label="Nights">{Array.from({ length: 8 }, (_, i) => i + 3).map(n => <option key={n} value={n}>{n} nights</option>)}</select></label>
           <label className="field compact-field"><span className="field-label"><Users size={15}/> TRAVELLERS</span><select value={form.adults} onChange={e => update('adults', e.target.value)} aria-label="Adults">{[1,2,3,4,5,6].map(n => <option key={n} value={n}>{n} adult{n > 1 ? 's' : ''}</option>)}</select></label>
           <label className="field compact-field"><span className="field-label"><Users size={15}/> CHILDREN</span><select value={form.children} onChange={e => update('children', e.target.value)} aria-label="Children">{[0,1,2,3,4].map(n => <option key={n} value={n}>{n} {n === 1 ? 'child' : 'children'}</option>)}</select></label>
-          <label className="field compact-field budget-field"><span className="field-label"><Wallet size={15}/> TOTAL BUDGET</span><span className="budget-input-wrap"><span aria-hidden="true">₹</span><input type="number" min="1" step="1000" inputMode="numeric" placeholder="Enter amount" value={form.budget_inr} onChange={e => update('budget_inr', e.target.value)} aria-label="Total budget in Indian rupees" required/></span></label>
+          <label className="field compact-field budget-field"><span className="field-label"><Wallet size={15}/> TOTAL BUDGET</span><span className="budget-input-wrap"><span aria-hidden="true">₹</span><input type="number" step="any" inputMode="numeric" placeholder="Enter amount" value={form.budget_inr} onChange={e => update('budget_inr', e.target.value)} aria-label="Total budget in Indian rupees" required/></span></label>
           <Button type="submit" size="lg" className="search-button" disabled={loading}><Search size={19}/>{loading ? 'Finding your trip…' : 'Find my trip'}<ArrowRight size={17}/></Button>
         </form><div className="search-foot"><span><Check size={14}/> Flights, stays & experiences in one plan</span><button type="button" onClick={() => document.querySelector('#how-it-works')?.scrollIntoView({ behavior: 'smooth' })}><CircleHelp size={14}/> How it works</button><span className="powered-note">Built around your budget</span></div>
         </section>

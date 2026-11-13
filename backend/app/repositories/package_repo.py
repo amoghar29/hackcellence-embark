@@ -80,11 +80,7 @@ class PackageRepository:
             b = conn.execute("SELECT reference FROM bookings WHERE id = %s FOR UPDATE", (trip_id,)).fetchone()
             if not b:
                 return None
-            # a concurrent insert of the same key waits here until the other transaction ends
-            conn.execute("INSERT INTO booking_idempotency_keys (key, booking_id) VALUES (%s, %s) "
-                         "ON CONFLICT DO NOTHING", (key, trip_id))
-            owner = conn.execute("SELECT booking_id FROM booking_idempotency_keys WHERE key = %s", (key,)).fetchone()
-            if owner["booking_id"] != trip_id:
+            if conn.execute("SELECT 1 FROM bookings WHERE idempotency_key = %s AND id <> %s", (key, trip_id)).fetchone():
                 raise IdempotencyKeyReused()
             if b["reference"]:
                 return b["reference"]
@@ -93,11 +89,12 @@ class PackageRepository:
                 reference = str(secrets.randbelow(9 * 10**9) + 10**9)  # 10 digits, never starts with 0
                 try:
                     with conn.transaction():
-                        conn.execute("UPDATE bookings SET status = 'BOOKED', reference = %s, updated_at = now() "
-                                     "WHERE id = %s", (reference, trip_id))
+                        conn.execute("UPDATE bookings SET status = 'BOOKED', reference = %s, idempotency_key = %s, "
+                                     "updated_at = now() WHERE id = %s", (reference, key, trip_id))
                     return reference
-                except psycopg.errors.UniqueViolation:
-                    continue
+                except psycopg.errors.UniqueViolation as e:
+                    if e.diag.constraint_name == "bookings_idempotency_key_key":  # another package took the key meanwhile
+                        raise IdempotencyKeyReused()
 
     def trip_id_for(self, reference: str) -> str | None:
         with self._connect() as conn:

@@ -186,3 +186,15 @@ def test_concurrent_bookings_of_the_last_seats_book_one(client):
         codes = sorted(pool.map(lambda p: book(client, p["trip_id"], key()).status_code, (a, b)))
     assert codes == [200, 409]
     assert inventory(a)[0][flight["catalog_id"]] == 0
+
+
+# ---------- where the key lives ----------
+
+def test_key_is_stored_on_the_booking_row(client):
+    pkg = search(client)
+    k = key()
+    with db() as conn:
+        assert conn.execute("SELECT idempotency_key FROM bookings WHERE id = %s", (pkg["trip_id"],)).fetchone()[0] is None
+    assert book(client, pkg["trip_id"], k).status_code == 200
+    with db() as conn:
+        assert conn.execute("SELECT idempotency_key FROM bookings WHERE id = %s", (pkg["trip_id"],)).fetchone()[0] == k

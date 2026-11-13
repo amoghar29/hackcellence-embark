@@ -13,8 +13,6 @@ from datetime import date, timedelta
 from app.core.timeutil import fmt
 from app.services import pricing
 
-UI_ONLY = ("nights", "cities", "remaining_inr", "days")
-
 
 def assemble(trip_id, request, selection, cat, reference=None):
     A, C = request["adults"], len(request["child_ages"])
@@ -89,13 +87,6 @@ def assemble(trip_id, request, selection, cat, reference=None):
     }
     trip["days"] = _days(trip, selection, cat, tz)
     return trip
-
-
-def export(trip):
-    """The judges' shared trip format: the package without the UI-only fields."""
-    out = {k: v for k, v in trip.items() if k not in UI_ONLY}
-    out["items"] = [{k: v for k, v in i.items() if k != "details"} for i in trip["items"]]
-    return out
 
 
 def _days(trip, selection, cat, tz):

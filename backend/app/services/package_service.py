@@ -1,4 +1,4 @@
-"""Search, reopen, export and book packages."""
+"""Search, reopen and book packages."""
 import logging
 from typing import Any, NamedTuple
 
@@ -44,9 +44,6 @@ class PackageService:
 
     def get(self, trip_id: str) -> dict:
         return self.open(trip_id).trip
-
-    def export(self, trip_id: str) -> dict:
-        return package.export(self.get(trip_id))
 
     def items(self, trip_id: str, type_: str) -> list[dict]:
         return [i for i in self.get(trip_id)["items"] if i["type"] == type_]
