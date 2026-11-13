@@ -257,7 +257,8 @@ def attraction_options(request, selection, day, cat):
             out.append({"attraction_id": a["attraction_id"], "name": a["name"], "category": a["category"],
                         "start": start.strftime("%Y-%m-%dT%H:%M"),
                         "end": (start + timedelta(minutes=a["visit_minutes"])).strftime("%Y-%m-%dT%H:%M"),
-                        "price_inr": pricing.attraction_price(a, A, C), "image": "/" + a["image"]})
+                        "price_inr": pricing.attraction_price(a, A, C), "image": "/" + a["image"],
+                        "child_friendly": a["child_friendly"]})
             break
     return sorted(out, key=lambda o: (o["start"], o["attraction_id"]))
 

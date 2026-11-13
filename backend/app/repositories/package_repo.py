@@ -51,6 +51,28 @@ class PackageRepository:
             self._insert_parts(conn, reference, selection, trip)
             return reference
 
+    def modify(self, reference: str, selection: dict, trip: dict) -> bool:
+        """Replaces a booking's parts in ONE transaction: gives back its seats and rooms, takes the new ones and
+        rewrites its rows. False for an unknown reference; raises SoldOut (then the booking is left as it was)."""
+        with self._connect() as conn:
+            if not conn.execute("SELECT 1 FROM bookings WHERE reference = %s FOR UPDATE", (reference,)).fetchone():
+                return False
+            # ponytail: give-back then take is in a different row order than book(); add global ordering if
+            # concurrent modifies ever deadlock
+            conn.execute("UPDATE flights f SET seats_left = f.seats_left + b.seats FROM booking_flights b "
+                         "WHERE b.booking_id = %s AND f.flight_id = b.flight_id", (reference,))
+            conn.execute("UPDATE availability a SET rooms_left = a.rooms_left + b.rooms FROM booking_hotels b "
+                         "WHERE b.booking_id = %s AND a.room_id = b.room_id AND a.date >= b.check_in "
+                         "AND a.date < b.check_out", (reference,))
+            self._take_inventory(conn, selection, trip)
+            conn.execute("UPDATE bookings SET arrival_flight_booking_id = NULL, return_flight_booking_id = NULL, "
+                         "arrival_transfer_booking_id = NULL, return_transfer_booking_id = NULL, total_inr = %s "
+                         "WHERE reference = %s", (trip["total_inr"], reference))
+            for table in PART_TABLES:
+                conn.execute(f"DELETE FROM {table} WHERE booking_id = %s", (reference,))
+            self._insert_parts(conn, reference, selection, trip)
+            return True
+
     def load(self, reference: str) -> tuple[dict, dict] | None:
         """(booking row, selection), or None for an unknown reference."""
         with self._connect() as conn:

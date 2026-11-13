@@ -10,6 +10,7 @@ test('parseHash', () => {
   assert.deepEqual(parseHash('#/reservation/4829105736'), { name: 'reservation', ref: '4829105736' })
   assert.deepEqual(parseHash('#/nope'), { name: 'home' })
   assert.deepEqual(parseHash('#/bookings'), { name: 'bookings' })
+  assert.deepEqual(parseHash('#/find'), { name: 'find' })
 })
 test('builders round-trip', () => {
   assert.deepEqual(parseHash(packageHash('t9')), { name: 'package', id: 't9' })

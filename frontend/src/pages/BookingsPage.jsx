@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { CalendarDays, ChevronRight, MapPin, Users } from 'lucide-react'
+import { CalendarDays, ChevronRight, MapPin, Pencil, Users } from 'lucide-react'
 import { Spinner } from '../components/ui'
 import { getReservations } from '../lib/api'
 import { fmtDate, money } from '../lib/format'
@@ -25,8 +25,9 @@ export default function BookingsPage() {
           <p className="text-lg">You have no bookings yet.</p>
           <a className="btn btn-primary mt-4" href="#/">Plan a trip</a>
         </div>
-      : <ul className="mt-6 grid gap-4" aria-label="Booked trips">{list.map(p => <li key={p.reference}>
-          <a href={reservationHash(p.reference)} className="flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-5 transition hover:border-brand hover:shadow-md">
+      : <ul className="mt-6 grid gap-4" aria-label="Booked trips">{list.map(p => <li key={p.reference} className="relative">
+          <a href={`${reservationHash(p.reference)}?modify`} className="btn btn-sm btn-outline absolute bottom-3 right-12 z-10" aria-label={`Modify booking ${p.reference}`}><Pencil size={14} />Modify</a>
+          <a href={reservationHash(p.reference)} className="flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-5 pb-14 sm:pb-5 transition hover:border-brand hover:shadow-md">
             <div className="flex-1 space-y-1">
               <p className="text-lg font-bold">{p.country}</p>
               <p className="flex flex-wrap gap-x-4 text-sm text-slate-600">
@@ -35,7 +36,7 @@ export default function BookingsPage() {
               </p>
               <p className="flex items-center gap-1 text-sm text-slate-600"><MapPin size={14} />{p.cities.map(c => c.city).join(' → ')}</p>
             </div>
-            <div className="text-right">
+            <div className="self-start text-right">
               <p className="font-bold">{money(p.total_inr)}</p>
               <p className="text-xs text-slate-500">No. <span className="font-mono tracking-wider">{p.reference}</span></p>
             </div>

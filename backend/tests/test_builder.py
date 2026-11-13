@@ -160,13 +160,44 @@ def test_one_city_trip_has_no_transfer_between_cities(cat, name):
 
 
 @pytest.mark.parametrize("changes", BUILDS.values(), ids=BUILDS.keys())
-def test_first_package_has_one_attraction_on_each_full_day_only(cat, changes):
+def test_first_package_has_one_or_two_attractions_on_each_full_day_only(cat, changes):
     trip = builder.build(req(cat, **changes), cat)
     start, end = date.fromisoformat(trip["start_date"]), date.fromisoformat(trip["end_date"])
     change_days = {date.fromisoformat(h["start"]) for h in of_type(trip, "hotel")} - {start}
     full_days = {start + timedelta(n) for n in range(1, (end - start).days)} - change_days
     visits = [datetime.fromisoformat(a["start"]).date() for a in of_type(trip, "attraction")]
-    assert sorted(visits) == sorted(full_days)
+    assert set(visits) == full_days
+    assert all(1 <= visits.count(d) <= 2 for d in full_days)
+    ids = [a["catalog_id"] for a in of_type(trip, "attraction")]
+    assert len(ids) == len(set(ids))  # each attraction at most once
+
+
+def test_second_visit_fits_the_day_when_the_budget_allows(cat):
+    trip = builder.build(req(cat, budget_inr=HUGE), cat)
+    by_day = {}
+    for a in of_type(trip, "attraction"):
+        by_day.setdefault(a["start"][:10], []).append(a)
+    assert any(len(v) == 2 for v in by_day.values())
+    for v in by_day.values():
+        v.sort(key=lambda a: a["start"])
+        for a in v:
+            rec = J["attractions"][a["catalog_id"]]
+            assert rec["open_from"] <= a["start"][11:16] and a["end"][11:16] <= rec["open_until"]
+        if len(v) == 2:
+            assert v[0]["end"] <= v[1]["start"]  # no overlap on the same day
+            assert all(a["start"][11:16] >= builder.VISIT_FROM for a in v)  # not at midnight because a place is open
+
+
+@pytest.mark.parametrize("budget", [350000, HUGE])
+def test_only_child_friendly_attractions_when_children_travel(cat, budget):
+    trip = builder.build(req(cat, child_ages=[6], budget_inr=budget), cat)
+    assert all(J["attractions"][a["catalog_id"]]["child_friendly"] for a in of_type(trip, "attraction"))
+
+
+def test_extra_visits_never_push_the_total_over_the_budget(cat):
+    cheapest = cheapest_menon(cat)
+    for budget in (cheapest, cheapest + 1500, cheapest + 20000):
+        assert cheapest <= builder.build(req(cat, budget_inr=budget), cat)["total_inr"] <= budget
 
 
 @pytest.mark.parametrize("changes", BUILDS.values(), ids=BUILDS.keys())
@@ -289,7 +320,10 @@ def test_at_most_five_reasons(cat):
 # ---------- budget ----------
 
 def cheapest_menon(cat):
-    return builder.build(req(cat, budget_inr=HUGE), cat)["total_inr"]
+    """The lowest possible total (one attraction per full day); extra visits are only added within the budget."""
+    with pytest.raises(builder.OverBudget) as e:
+        builder.build(req(cat, budget_inr=1), cat)
+    return e.value.cheapest_total_inr
 
 
 def test_budget_equal_to_the_cheapest_total_is_enough(cat):

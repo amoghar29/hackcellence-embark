@@ -3,6 +3,7 @@ given and sends its request and selection back to change or book it."""
 import hashlib
 import json
 import logging
+from datetime import timedelta
 from typing import Any
 
 from pydantic import ValidationError
@@ -82,7 +83,8 @@ class PackageService:
                  request["country"], request["start_date"], request["nights"], trip["total_inr"])
         return reference, self.reservation(reference)
 
-    def reservation(self, reference: str) -> dict:
+    def _load(self, reference: str) -> tuple[dict, dict]:
+        """(request, selection) of a booking. Raises NotFound."""
         found = self._repo.load(reference) if reference.isdigit() and len(reference) == 10 else None
         if not found:
             raise NotFound("Reservation")
@@ -90,7 +92,35 @@ class PackageService:
         request = {"departure_city": b["home_airport"], "country": self._cat.country_name(b["country_code"]),
                    "start_date": b["start_date"], "end_date": b["end_date"], "nights": b["nights"],
                    "adults": b["adults"], "child_ages": b["child_ages"], "budget_inr": b["budget_inr"]}
-        return package.assemble(request, selection, self._cat, reference=b["reference"])
+        return request, selection
+
+    def reservation(self, reference: str) -> dict:
+        """The booked package, with its request and selection so it can be changed (M6) and saved with modify()."""
+        request, selection = self._load(reference)
+        return present(package.assemble(request, selection, self._cat, reference=reference), request, selection)
+
+    def held(self, reference: str) -> tuple[dict, dict]:
+        """What a booking holds: ({flight_id: seats}, {(room_id, night): rooms}). Raises NotFound."""
+        request, selection = self._load(reference)
+        trip = package.assemble(request, selection, self._cat)
+        seats = {i["catalog_id"]: i["quantity"] for i in trip["items"] if i["type"] == "flight"}
+        rooms = {(s["room_id"], s["check_in"] + timedelta(n)): s["rooms"]
+                 for s in selection["stays"] for n in range((s["check_out"] - s["check_in"]).days)}
+        return seats, rooms
+
+    def modify(self, reference: str, raw: Any) -> dict:
+        """Saves a changed booking: same travelers and dates, a new selection checked against every rule.
+        Raises NotFound, InvalidRequest or errors.SoldOut (then the booking is unchanged)."""
+        booked, _ = self._load(reference)
+        sent = raw.get("request") if isinstance(raw, dict) else None
+        if isinstance(sent, dict) and {k: v for k, v in validate_request(sent, self._cat).items() if k in booked} != booked:
+            raise InvalidRequest("request", "A booking keeps its travelers, dates and budget; change only its parts.")
+        request, selection = self.rebuild(raw)
+        trip = package.assemble(request, selection, self._cat)
+        if not self._repo.modify(reference, selection, trip):
+            raise NotFound("Reservation")
+        log.info("Modified %s: total %d", reference, trip["total_inr"])
+        return self.reservation(reference)
 
     def reservations(self) -> list[dict]:
         return [self.reservation(r) for r in self._repo.references()]

@@ -14,8 +14,9 @@ export function itemFacts(it) {
 }
 
 export function when(it) {
-  const t = it.type === 'hotel' ? `${fmtDate(it.start)} → ${fmtDate(it.end)}` : `${fmtDate(it.start)}, ${fmtTime(it.start)}`
-  return it.type === 'flight' ? `${fmtDate(it.start)}, ${fmtTime(it.start)} → ${fmtTime(it.end)}` : t
+  if (it.type === 'hotel') return `${fmtDate(it.start)} → ${fmtDate(it.end)}`
+  const endDay = it.end?.slice(0, 10) !== it.start?.slice(0, 10) ? `${fmtDate(it.end)}, ` : ''
+  return `${fmtDate(it.start)}, ${fmtTime(it.start)} → ${endDay}${fmtTime(it.end)}`
 }
 
 export default function ItemCard({ item, onOpen, onChange, canChange, updated }) {

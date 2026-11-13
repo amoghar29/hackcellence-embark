@@ -26,13 +26,13 @@ function Body({ item, d }) {
   if (item.type === 'transfer') return <Rows rows={[
     ['Service', d.name], ['Type', d.type?.replaceAll('_', ' ').toLowerCase()], ['From', d.from_point], ['To', d.to_point], ['Door to door', yn(d.door_to_door)],
     ['Duration', duration(d.duration_minutes)], ['Runs', d.service_from && `${d.service_from} – ${d.service_until}`], ['Every', d.frequency_minutes && `${d.frequency_minutes} min`],
-    ['Fits', d.max_passengers && `${d.max_passengers} passengers`], ['Price', d.price_inr != null && money(d.price_inr)], ['Child price', d.child_price_inr != null && money(d.child_price_inr)]]} />
+    ['Fits', d.max_passengers && `${d.max_passengers} passengers`], [d.pricing === 'PER_VEHICLE' ? 'Price per vehicle' : 'Price per person', d.price_inr != null && money(d.price_inr)], ['You pay', `${money(item.price_inr)} for ${item.quantity} ${d.pricing === 'PER_VEHICLE' ? 'vehicle' : 'ticket'}${item.quantity > 1 ? 's' : ''}`], ['Child price', d.child_price_inr != null && money(d.child_price_inr)]]} />
   return <>
     <Img src={photo} alt={d.name} className="mb-4 h-56 w-full rounded-xl" />
     {d.name_ja && <p className="mb-2 text-slate-500">{d.name_ja}</p>}
     <Rows rows={[['Category', d.category], ['Visit time', `${d.visit_minutes} min`], ['Open', `${d.open_from} – ${d.open_until}`], ['Open days', d.open_days?.join?.(', ') ?? d.open_days],
       ['Child friendly', yn(d.child_friendly)], ['Accessible', yn(d.accessible)], ['Adult ticket', money(d.price_per_person_inr)],
-      ['Child ticket', d.child_price_inr == null ? 'Adult price' : d.child_price_inr === 0 ? 'Free' : money(d.child_price_inr)], ['Planned visit', `${fmtDate(item.start)}, ${fmtTime(item.start)}–${fmtTime(item.end)}`]]} />
+      ['Child ticket', d.child_price_inr == null ? 'Adult price' : d.child_price_inr === 0 ? 'Free' : money(d.child_price_inr)], ['Planned visit', `${fmtDate(item.start)}, ${fmtTime(item.start)}–${fmtTime(item.end)}`], ['You pay', `${money(item.price_inr)} for ${item.quantity} ${item.quantity > 1 ? 'people' : 'person'}`]]} />
   </>
 }
 

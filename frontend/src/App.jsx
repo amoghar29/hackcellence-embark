@@ -4,6 +4,7 @@ import Landing from './pages/Landing'
 import Results from './pages/Results'
 import PackagePage from './pages/PackagePage'
 import BookingsPage from './pages/BookingsPage'
+import FindBookingPage from './pages/FindBookingPage'
 import { parseHash } from './lib/route'
 
 export default function App() {
@@ -17,11 +18,13 @@ export default function App() {
     <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 backdrop-blur">
       <div className="mx-auto flex h-14 max-w-6xl items-center px-4">
         <a href="#/" className="flex items-center gap-2 text-lg font-bold text-brand"><Compass size={22} />embark</a>
-        <a href="#/bookings" className="ml-auto text-sm font-semibold text-slate-600 hover:underline">My bookings</a>
+        <a href="#/find" className="ml-auto mr-4 text-sm font-semibold text-slate-600 hover:underline">Find booking</a>
+        <a href="#/bookings" className=" text-sm font-semibold text-slate-600 hover:underline">My bookings</a>
       </div>
     </header>
     {route.name === 'results' && <Results />}
     {route.name === 'bookings' && <BookingsPage />}
+    {route.name === 'find' && <FindBookingPage />}
     {route.name === 'home' && <Landing />}
     {/* key forces a fresh load (and fresh booking key) when the trip or reservation changes */}
     {route.name === 'package' && <PackagePage key={route.id} id={route.id} />}

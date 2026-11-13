@@ -5,8 +5,8 @@ rules are picked; the result must then pass validator.validate() or it is droppe
 package that passes is returned. When none exists, the reasons (blockers) and working nearby
 requests (alternatives) are reported. Only catalog data is used.
 
-Deliberately simple: one attraction on each full day and none on the arrival, city-change and last
-days (the rules ask for no more), and no optional city taxis.
+Attractions: one on each full day, plus a second non-overlapping one on a full day while the package
+stays within the budget; none on the arrival, city-change and last days. No optional city taxis.
 """
 import logging
 from datetime import timedelta
@@ -23,6 +23,7 @@ PARTS = {"FLIGHT": "flight", "SEATS": "flight", "ROOM": "hotel", "HOTEL": "hotel
 MAX_WAIT_AT_AIRPORT = 240   # minutes after landing + 60 to wait for the first transfer
 INTERCITY_FROM = "09:00"    # earliest departure on a city-change day
 VISIT_FROM = "10:00"        # a visit starts here, or at opening time if that is later
+VISIT_GAP = 30              # minutes between two visits on the same day, to get from one to the other
 
 
 class NoPackage(Exception):
@@ -238,7 +239,7 @@ def build_plan(request, plan, cat, objective="cheapest"):
     # full days only: not the arrival day, not a city-change day, not the last day
     full_days = [(day, city) for city, ci, co in spans for day in (ci + timedelta(i) for i in range((co - ci).days))
                  if day != ci]
-    options = {day: _open_attractions(cat, city, day) for day, city in full_days}
+    options = {day: _open_attractions(cat, city, day, C > 0) for day, city in full_days}
     used, visits = set(), []
     # ponytail: greedy (days with the fewest options first), not a full matching. A plan it cannot fill
     # is dropped while other plans still compete. Use bipartite matching if plans are lost this way.
@@ -252,6 +253,24 @@ def build_plan(request, plan, cat, objective="cheapest"):
         cost += price
         visits.append({"attraction_id": aid, "start": visit_start})
 
+    # a second visit on a full day, cheapest first, only while the whole package stays within the budget
+    # ponytail: greedy over (price, day); a knapsack would fit more visits into a tight budget
+    extras = []
+    for day, city in full_days:
+        first = next(v for v in visits if v["start"].date() == day)
+        first_end = first["start"] + timedelta(minutes=cat.get_attraction(first["attraction_id"])["visit_minutes"])
+        for a in cat.attractions_in(city):
+            start = _second_start(a, day, first["start"], first_end, C > 0)
+            if start and a["attraction_id"] not in used:
+                extras.append((pricing.attraction_price(a, A, C), day, a["attraction_id"], start))
+    filled = set()
+    for price, day, aid, visit_start in sorted(extras):
+        if day not in filled and aid not in used and cost + price <= request["budget_inr"]:
+            filled.add(day)
+            used.add(aid)
+            cost += price
+            visits.append({"attraction_id": aid, "start": visit_start})
+
     selection = {
         "arrival": {"flight_id": legs[True][1]["flight_id"], "transfer_id": legs[True][2]["transfer_id"],
                     "pickup": legs[True][3]},
@@ -262,19 +281,43 @@ def build_plan(request, plan, cat, objective="cheapest"):
     return cost, selection
 
 
-def _open_attractions(cat, city, day):
-    """[(attraction, visit start)] for attractions in the city that are open that day and fit a whole visit."""
+def _open_attractions(cat, city, day, kids=False):
+    """[(attraction, visit start)] for attractions in the city that are open that day and fit a whole visit
+    (child friendly ones only when children travel)."""
     out = []
     for a in cat.attractions_in(city):
-        if DAYS[day.weekday()] not in a["open_days"] or day in a["closed_dates"]:
-            continue
-        opens, closes = parse_hhmm(a["open_from"]), parse_hhmm(a["open_until"])
-        begin = max(opens, parse_hhmm(VISIT_FROM))
-        if begin + a["visit_minutes"] > closes:
-            begin = opens
-        if begin + a["visit_minutes"] <= closes:
+        begin = _visit_begin(a, day, kids)
+        if begin is not None:
             out.append((a, at(day, "00:00") + timedelta(minutes=begin)))
     return out
+
+
+def _visit_begin(a, day, kids):
+    """Minute of the day a whole visit of `a` starts: VISIT_FROM or opening time if later, else opening time
+    for a place that closes early. None when closed that day, the visit does not fit, or children travel
+    and the place is not child friendly."""
+    if (kids and not a["child_friendly"]) or DAYS[day.weekday()] not in a["open_days"] or day in a["closed_dates"]:
+        return None
+    opens, closes = parse_hhmm(a["open_from"]), parse_hhmm(a["open_until"])
+    begin = max(opens, parse_hhmm(VISIT_FROM))
+    if begin + a["visit_minutes"] > closes:
+        begin = opens
+    return begin if begin + a["visit_minutes"] <= closes else None
+
+
+def _second_start(a, day, busy_from, busy_until, kids):
+    """Earliest start for a whole visit of `a` on `day` inside its opening hours, before or VISIT_GAP after
+    the visit already planned (busy_from-busy_until), or None."""
+    begin = _visit_begin(a, day, kids)
+    if begin is None:
+        return None
+    midnight, gap, length = at(day, "00:00"), timedelta(minutes=VISIT_GAP), timedelta(minutes=a["visit_minutes"])
+    after = max(midnight + timedelta(minutes=begin), busy_until + gap)
+    for start in (midnight + timedelta(minutes=begin), after):
+        if start + length + gap <= busy_from or (start >= busy_until + gap and start + length
+                                                 <= midnight + timedelta(minutes=parse_hhmm(a["open_until"]))):
+            return start
+    return None
 
 
 # ---------- the whole request ----------

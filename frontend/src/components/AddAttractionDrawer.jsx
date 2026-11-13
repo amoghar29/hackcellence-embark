@@ -40,7 +40,8 @@ export default function AddAttractionDrawer({ pkg, date, onClose, onChanged }) {
           <div className="flex gap-3">
             <Img src={imageUrl(o.image, API)} className="h-20 w-24 shrink-0 rounded-lg" />
             <div className="min-w-0 flex-1"><h3 className="font-semibold leading-tight">{o.name}</h3>
-              <p className="text-sm text-slate-600">{o.category} · {fmtTime(o.start)}–{fmtTime(o.end)}</p></div>
+              <p className="text-sm text-slate-600">{o.category} · {fmtTime(o.start)}–{fmtTime(o.end)}</p>
+              {pkg.traveler.children > 0 && o.child_friendly === false && <span className="badge badge-warning badge-soft badge-sm mt-1">Not child friendly</span>}</div>
           </div>
           <div className="mt-2 flex items-center justify-between"><span><b>+{money(o.price_inr)}</b></span>
             <button className="btn btn-sm btn-outline" onClick={() => { setPick(o); setErr(null) }}>Select</button></div>
