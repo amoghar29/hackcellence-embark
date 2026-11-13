@@ -8,7 +8,7 @@ from starlette.exceptions import HTTPException
 
 from app.services.builder import NoPackage, OverBudget
 from app.services.changes import Refused
-from app.services.errors import AlreadyBooked, NotFound
+from app.services.errors import AlreadyBooked, IdempotencyKeyReused, NotFound, SoldOut
 from app.services.request_form import InvalidRequest
 
 log = logging.getLogger(__name__)
@@ -61,6 +61,14 @@ def _already_booked(request: Request, e: AlreadyBooked) -> JSONResponse:
     return _error(request, 409, "ALREADY_BOOKED", str(e))
 
 
+def _sold_out(request: Request, e: SoldOut) -> JSONResponse:
+    return _error(request, 409, "SOLD_OUT", str(e), part=e.part)
+
+
+def _key_reused(request: Request, e: IdempotencyKeyReused) -> JSONResponse:
+    return _error(request, 409, "IDEMPOTENCY_KEY_REUSED", str(e))
+
+
 def _unexpected(request: Request, e: Exception) -> JSONResponse:
     return JSONResponse({"code": "INTERNAL_ERROR", "error": "Something went wrong. Try again."}, status_code=500)
 
@@ -74,6 +82,8 @@ HANDLERS = {
     OverBudget: _over_budget,
     Refused: _change_refused,
     AlreadyBooked: _already_booked,
+    SoldOut: _sold_out,
+    IdempotencyKeyReused: _key_reused,
     Exception: _unexpected,
 }
 

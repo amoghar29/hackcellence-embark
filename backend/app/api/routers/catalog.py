@@ -1,13 +1,14 @@
 from fastapi import APIRouter
 
 from app.api.deps import CatalogServiceDep
+from app.schemas.responses import Credits, FormOptions
 
 router = APIRouter(prefix="/api", tags=["catalog"])
 
 
 @router.get("/options")
-def options(service: CatalogServiceDep) -> dict:
-    return service.options()
+def options(service: CatalogServiceDep) -> FormOptions:
+    return FormOptions.model_validate(service.options())
 
 
 @router.get("/hotels/{hotel_id}")
@@ -31,5 +32,5 @@ def attraction(attraction_id: str, service: CatalogServiceDep) -> dict:
 
 
 @router.get("/credits")
-def credits(service: CatalogServiceDep) -> dict:
-    return {"markdown": service.credits()}
+def credits(service: CatalogServiceDep) -> Credits:
+    return Credits(markdown=service.credits())

@@ -26,15 +26,15 @@ def _travelers(request):
 
 
 def _stay_city(cat, stay):
-    return cat.hotels[stay["hotel_id"]]["city"]
+    return cat.get_hotel(stay["hotel_id"])["city"]
 
 
 def _repick_airport_leg(request, selection, cat, arriving):
     """Keep the flight, choose the transfer again for the (new) hotel or flight time."""
     side = "arrival" if arriving else "return"
     A, C = _travelers(request)
-    flight = cat.flights[selection[side]["flight_id"]]
-    hotel = cat.hotels[selection["stays"][0 if arriving else -1]["hotel_id"]]
+    flight = cat.get_flight(selection[side]["flight_id"])
+    hotel = cat.get_hotel(selection["stays"][0 if arriving else -1]["hotel_id"])
     leg = builder.airport_leg(cat, [flight], hotel, A, C, arriving)
     if isinstance(leg, str):
         airport = flight["to_airport" if arriving else "from_airport"]
@@ -59,7 +59,7 @@ def _room_choice(request, stay, hotel, room, cat):
     if not k:
         raise _refuse("NO_ROOM_FITS", f"{room['name']} at {hotel['name']} does not fit {builder.people(A, C)} "
                                       "(each room needs an adult).")
-    full = [str(n) for n in _nights(stay) if cat.availability.get((room["room_id"], n), 0) < k]
+    full = [str(n) for n in _nights(stay) if cat.rooms_left(room["room_id"], n) < k]
     if full:
         raise _refuse("HOTEL_SOLD_OUT", f"{hotel['name']} does not have {k} x {room['name']} free on "
                                         f"{', '.join(full)}.")
@@ -76,7 +76,7 @@ def apply(request, selection, change, cat):
 
     if action == "change_hotel":
         i = next((n for n, s in enumerate(sel["stays"]) if _stay_city(cat, s) == change.get("city")), None)
-        hotel, room = cat.hotels.get(change.get("hotel_id")), cat.rooms.get(change.get("room_id"))
+        hotel, room = cat.get_hotel(change.get("hotel_id")), cat.get_room(change.get("room_id"))
         if i is None:
             raise Refused([f"{change.get('city')} is not a city of this package."])
         if not hotel or not room or room["hotel_id"] != hotel["hotel_id"] or hotel["city"] != change["city"]:
@@ -90,7 +90,7 @@ def apply(request, selection, change, cat):
 
     elif action == "change_flight":
         side = {"flight-arrival": "arrival", "flight-return": "return"}.get(change.get("item_id"))
-        f = cat.flights.get(change.get("flight_id"))
+        f = cat.get_flight(change.get("flight_id"))
         if not side or not f:
             raise Refused(["Choose one of the package's flights and a flight from the catalog."])
         arriving = side == "arrival"
@@ -108,7 +108,7 @@ def apply(request, selection, change, cat):
         _repick_airport_leg(request, sel, cat, arriving)  # the new landing or departure time moves the transfer
 
     elif action == "add_attraction":
-        a = cat.attractions.get(change.get("attraction_id"))
+        a = cat.get_attraction(change.get("attraction_id"))
         try:
             start = datetime.fromisoformat(change.get("start"))
         except (TypeError, ValueError):
@@ -140,11 +140,11 @@ def hotel_options(request, selection, city, cat):
     stay = next((s for s in selection["stays"] if _stay_city(cat, s) == city), None)
     if not stay:
         return None
-    current = pricing.hotel_price(cat.rooms[stay["room_id"]], stay["rooms"], len(_nights(stay)))
+    current = pricing.hotel_price(cat.get_room(stay["room_id"]), stay["rooms"], len(_nights(stay)))
     out = []
-    for room in cat.rooms.values():
-        hotel = cat.hotels[room["hotel_id"]]
-        if hotel["city"] != city or room["room_id"] == stay["room_id"]:
+    for room in cat.rooms_in(city):
+        hotel = cat.get_hotel(room["hotel_id"])
+        if room["room_id"] == stay["room_id"]:
             continue
         try:
             k = _room_choice(request, stay, hotel, room, cat)
@@ -168,7 +168,7 @@ def flight_options(request, selection, direction, cat):
                                    request["start_date" if arriving else "end_date"], A + C, arriving)
     except builder.Blocked:
         return []
-    current = pricing.flight_price(cat.flights[selection[side]["flight_id"]], A + C)
+    current = pricing.flight_price(cat.get_flight(selection[side]["flight_id"]), A + C)
     return sorted(({"flight_id": f["flight_id"], "flight_number": f["flight_number"], "airline": f["airline"],
                     "from_airport": f["from_airport"], "to_airport": f["to_airport"],
                     "departure": f["departure_local"].strftime("%Y-%m-%dT%H:%M"),
@@ -184,7 +184,7 @@ def attraction_options(request, selection, day, cat):
     A, C = _travelers(request)
     used = {v["attraction_id"] for v in selection["attractions"]}
     out = []
-    for a in cat.attractions.values():
+    for a in cat.list_attractions():
         if a["attraction_id"] in used or DAYS[day.weekday()] not in a["open_days"]:
             continue
         minute, last = parse_hhmm(a["open_from"]), parse_hhmm(a["open_until"]) - a["visit_minutes"]

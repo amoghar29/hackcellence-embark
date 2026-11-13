@@ -4,6 +4,7 @@ Every package the API returns must pass check_trip.py, which reads the JSON cata
 directly (not the app's DB), so it stays an independent judge of the app.
 """
 import re
+import uuid
 from datetime import date, timedelta
 
 import pytest
@@ -46,6 +47,10 @@ def search(client, req=MENON):
 
 def of_type(pkg, type_):
     return [i for i in pkg["items"] if i["type"] == type_]
+
+
+def key():
+    return {"Idempotency-Key": uuid.uuid4().hex}
 
 
 def assert_not_found(r):
@@ -504,7 +509,7 @@ def test_credits(client):
 
 def test_book_gives_10_digit_reference_and_booked_package(client):
     pkg = search(client)
-    r = client.post(f"/api/packages/{pkg['trip_id']}/book")
+    r = client.post(f"/api/packages/{pkg['trip_id']}/book", headers=key())
     assert r.status_code == 200
     body = r.json()
     ref = body["reference"]
@@ -519,7 +524,7 @@ def test_book_gives_10_digit_reference_and_booked_package(client):
 
 def test_reservation_opens_the_booked_package(client):
     pkg = search(client)
-    booked = client.post(f"/api/packages/{pkg['trip_id']}/book").json()
+    booked = client.post(f"/api/packages/{pkg['trip_id']}/book", headers=key()).json()
     r = client.get(f"/api/reservations/{booked['reference']}")
     assert r.status_code == 200 and r.json() == booked["package"]
     assert client.get(f"/api/packages/{pkg['trip_id']}").json() == booked["package"]
@@ -527,7 +532,7 @@ def test_reservation_opens_the_booked_package(client):
 
 def test_export_after_booking_is_booked(client):
     pkg = search(client)
-    ref = client.post(f"/api/packages/{pkg['trip_id']}/book").json()["reference"]
+    ref = client.post(f"/api/packages/{pkg['trip_id']}/book", headers=key()).json()["reference"]
     trip = client.get(f"/api/packages/{pkg['trip_id']}/export").json()
     assert trip["status"] == "BOOKED"
     assert all(i["status"] == "BOOKED" and i["booking"] == {"reference": ref} for i in trip["items"])
@@ -536,19 +541,19 @@ def test_export_after_booking_is_booked(client):
 
 def test_booking_twice_keeps_the_reference(client):
     pkg = search(client)
-    first = client.post(f"/api/packages/{pkg['trip_id']}/book").json()["reference"]
-    second = client.post(f"/api/packages/{pkg['trip_id']}/book").json()["reference"]
+    first = client.post(f"/api/packages/{pkg['trip_id']}/book", headers=key()).json()["reference"]
+    second = client.post(f"/api/packages/{pkg['trip_id']}/book", headers=key()).json()["reference"]
     assert first == second
 
 
 def test_references_are_unique(client):
-    refs = {client.post(f"/api/packages/{search(client)['trip_id']}/book").json()["reference"] for _ in range(3)}
+    refs = {client.post(f"/api/packages/{search(client)['trip_id']}/book", headers=key()).json()["reference"] for _ in range(3)}
     assert len(refs) == 3
 
 
 def test_reservation_survives_backend_restart(client):
     pkg = search(client)
-    booked = client.post(f"/api/packages/{pkg['trip_id']}/book").json()
+    booked = client.post(f"/api/packages/{pkg['trip_id']}/book", headers=key()).json()
     from app.main import create_app
 
     with TestClient(create_app()) as fresh:
@@ -557,7 +562,7 @@ def test_reservation_survives_backend_restart(client):
 
 
 def test_book_unknown_package_not_found(client):
-    assert_not_found(client.post("/api/packages/does-not-exist/book"))
+    assert_not_found(client.post("/api/packages/does-not-exist/book", headers=key()))
 
 
 @pytest.mark.parametrize("ref", ["0000000000", "9999999999", "123", "abcdefghij"])

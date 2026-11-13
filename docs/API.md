@@ -46,6 +46,8 @@ Every error has the same shape, so the UI can show `error` and highlight `field`
 | 422 | `OVER_BUDGET` | Packages exist but none fits the budget | `budget_inr`, `cheapest_total_inr`, `over_by_inr`, `suggestion`, `alternatives` |
 | 422 | `CHANGE_REFUSED` | Phase 2: the change would break a travel rule | `reasons`, `blockers` |
 | 409 | `ALREADY_BOOKED` | Phase 2: changing a booked package | |
+| 409 | `SOLD_OUT` | Booking: a flight or room was taken since the search | `part`: `flight` or `hotel` |
+| 409 | `IDEMPOTENCY_KEY_REUSED` | Booking: the `Idempotency-Key` already booked another package | |
 
 ### Reasons and recommendations (422)
 
@@ -185,13 +187,22 @@ Responses:
 
 ### `POST /api/packages/{trip_id}/book`
 
-No body. **200**:
+No body. Header `Idempotency-Key` (required, 1 to 255 characters): make one per click on "Book", for example a UUID, and send the same key again when retrying that click. **200**:
 
 ```json
 { "reference": "4829105736", "package": { "...": "Package with status BOOKED" } }
 ```
 
-After booking, the package and every item have `status: "BOOKED"`, and every item has `booking: {"reference": "4829105736"}`. Booking again returns the same reference. **404** `NOT_FOUND`.
+After booking, the package and every item have `status: "BOOKED"`, and every item has `booking: {"reference": "4829105736"}`. Booking again (same or new key) returns the same reference.
+
+Booking takes the flight seats and the hotel rooms for every night in one transaction, together with the package's transfers and attractions. If any flight or room is gone, nothing is booked and the package stays `PLANNED`.
+
+| HTTP | `code` | When |
+|---|---|---|
+| 400 | `INVALID_REQUEST` | `Idempotency-Key` missing, empty or too long (`field: "Idempotency-Key"`) |
+| 404 | `NOT_FOUND` | Unknown `trip_id` |
+| 409 | `SOLD_OUT` | A flight or room was taken since the search. `part` is `flight` or `hotel`. Nothing was booked: search again or change that part. The same key can be retried |
+| 409 | `IDEMPOTENCY_KEY_REUSED` | The key already booked another package. Send a new key |
 
 ### `GET /api/reservations/{reference}`
 

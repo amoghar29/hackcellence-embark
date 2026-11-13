@@ -8,14 +8,14 @@ and when no package is possible it says why and what to change. Contract: docs/A
   raises builder.OverBudget  .cheapest_total_inr, .suggestion, .alternatives
       alternatives = [{"change": {request fields}, "total_inr": n}], each one already built
 
-Blocker tests pass a doctored copy of the catalog (dataclasses.replace), so each blocker is hit
-on purpose and no test depends on finding a lucky real request.
+Blocker tests doctor the catalog tables inside the test's transaction (rolled back afterwards), so each
+blocker is hit on purpose and no test depends on finding a lucky real request.
 """
-import dataclasses
 from datetime import date, datetime, timedelta
 
 import pytest
 
+from app.repositories.catalog_repo import CatalogRepository
 from app.services import builder, validator
 from app.services.request_form import validate_request
 from tests.check_trip import check, load_catalog
@@ -55,10 +55,24 @@ def of_type(trip, type_):
 
 # ---------- doctoring the catalog ----------
 
+def doctor(cat, table, key, change):
+    """change(row) -> row, or None to delete it. Returns a repository that sees the changed table."""
+    conn = cat.conn
+    conn.execute("DELETE FROM bookings")  # saved packages reference catalog rows
+    for row in conn.execute(f"SELECT * FROM {table}").fetchall():
+        new = change(dict(row))
+        if new is None:
+            conn.execute(f"DELETE FROM {table} WHERE {key} = %s", (row[key],))
+        elif new != row:
+            cols = [c for c in new if new[c] != row[c]]
+            conn.execute(f"UPDATE {table} SET {', '.join(f'{c} = %s' for c in cols)} WHERE {key} = %s",
+                         [new[c] for c in cols] + [row[key]])
+    return CatalogRepository(conn)
+
+
 def with_flights(cat, change):
     """change(flight) -> flight, or None to remove it."""
-    flights = {k: change(dict(f)) for k, f in cat.flights.items()}
-    return dataclasses.replace(cat, flights={k: f for k, f in flights.items() if f})
+    return doctor(cat, "flights", "flight_id", change)
 
 
 def lands_on(day, home="BLR"):
@@ -71,11 +85,15 @@ def leaves_on(day, home="BLR"):
 
 def sold_out(cat, when):
     """when(room_id, night) -> True to set rooms_left to 0."""
-    return dataclasses.replace(cat, availability={k: 0 if when(*k) else v for k, v in cat.availability.items()})
+    hit = [r for r in cat.conn.execute("SELECT room_id, date FROM availability").fetchall() if when(r["room_id"], r["date"])]
+    cat.conn.execute("UPDATE availability SET rooms_left = 0 WHERE (room_id, date) IN "
+                     "(SELECT * FROM unnest(%s::text[], %s::date[]))",
+                     ([r["room_id"] for r in hit], [r["date"] for r in hit]))
+    return CatalogRepository(cat.conn)
 
 
 def city_of_room(cat, room_id):
-    return cat.hotels[cat.rooms[room_id]["hotel_id"]]["city"]
+    return cat.get_hotel(cat.get_room(room_id)["hotel_id"])["city"]
 
 
 # ---------- city plans ----------
@@ -230,8 +248,8 @@ def test_hotels_sold_out_on_one_night(cat):
 
 def test_arrival_after_the_last_airport_transfer(cat):
     c = with_flights(cat, lambda f: dict(f, arrival_local=datetime(2027, 4, 10, 23, 40)) if lands_on(START)(f) else f)
-    c = dataclasses.replace(c, transfers={k: dict(t, service_from="06:00", service_until="23:00") if t["airport"] else t
-                                          for k, t in c.transfers.items()})
+    c = doctor(c, "transfers", "transfer_id",
+               lambda t: dict(t, service_from="06:00", service_until="23:00") if t["airport"] else t)
     assert "ARRIVAL_TOO_LATE" in codes(no_package(c))
 
 
@@ -242,9 +260,10 @@ def test_return_flight_too_early_to_reach_the_airport(cat):
 
 def test_not_enough_attractions_for_the_full_days(cat):
     one_per_city = {}
-    for a in cat.attractions.values():
+    for a in cat.list_attractions():
         one_per_city.setdefault(a["city"], a)
-    c = dataclasses.replace(cat, attractions={a["attraction_id"]: a for a in one_per_city.values()})
+    keep = {a["attraction_id"] for a in one_per_city.values()}
+    c = doctor(cat, "attractions", "attraction_id", lambda a: a if a["attraction_id"] in keep else None)
     exc = no_package(c, nights=10, child_ages=[], budget_inr=HUGE)  # at least 7 full days, 3 attractions
     assert "NOT_ENOUGH_ATTRACTIONS" in codes(exc)
 

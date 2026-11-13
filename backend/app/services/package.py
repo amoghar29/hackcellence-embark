@@ -32,11 +32,11 @@ def assemble(trip_id, request, selection, cat, reference=None):
                       "sources": [], "warnings": [], "details": details, **extra})
 
     stays = selection["stays"]
-    hotels = [cat.hotels[s["hotel_id"]] for s in stays]
+    hotels = [cat.get_hotel(s["hotel_id"]) for s in stays]
 
     for direction, leg, city in (("ARRIVAL", selection["arrival"], hotels[0]["city"]),
                                  ("RETURN", selection["return"], cat.home_city(home))):
-        f = cat.flights[leg["flight_id"]]
+        f = cat.get_flight(leg["flight_id"])
         add(f"flight-{direction.lower()}", "flight", f"{f['flight_number']} {f['from_airport']} to {f['to_airport']}", city, f["flight_id"],
             fmt(f["departure_local"]), fmt(f["arrival_local"]), N, pricing.flight_price(f, N),
             {"direction": direction, "airline": f["airline"], "flight_number": f["flight_number"],
@@ -48,7 +48,7 @@ def assemble(trip_id, request, selection, cat, reference=None):
                  ("transfer-return", "AIRPORT_RETURN", selection["return"])]
     transfers += [(f"transfer-city-{n}", "INTERCITY", leg) for n, leg in enumerate(selection["intercity"], 1)]
     for item_id, kind, leg in transfers:
-        t = cat.transfers[leg["transfer_id"]]
+        t = cat.get_transfer(leg["transfer_id"])
         add(item_id, "transfer", t["name"], t["city"] or t["to_city"], t["transfer_id"], fmt(leg["pickup"]),
             fmt(leg["pickup"] + timedelta(minutes=t["duration_minutes"])), pricing.transfer_quantity(t, A, C),
             pricing.transfer_price(t, A, C),
@@ -56,7 +56,7 @@ def assemble(trip_id, request, selection, cat, reference=None):
              "duration_minutes": t["duration_minutes"], "pricing": t["pricing"]})
 
     for n, (s, h) in enumerate(zip(stays, hotels), 1):
-        room = cat.rooms[s["room_id"]]
+        room = cat.get_room(s["room_id"])
         nights = (s["check_out"] - s["check_in"]).days
         add(f"hotel-{n}", "hotel", h["name"], h["city"], h["hotel_id"], s["check_in"].isoformat(), s["check_out"].isoformat(),
             s["rooms"], pricing.hotel_price(room, s["rooms"], nights),
@@ -66,7 +66,7 @@ def assemble(trip_id, request, selection, cat, reference=None):
             room_id=room["room_id"])
 
     for visit in selection["attractions"]:
-        a = cat.attractions[visit["attraction_id"]]
+        a = cat.get_attraction(visit["attraction_id"])
         add(f"attraction-{a['attraction_id']}", "attraction", a["name"], a["city"], a["attraction_id"], fmt(visit["start"]),
             fmt(visit["start"] + timedelta(minutes=a["visit_minutes"])), N, pricing.attraction_price(a, A, C),
             {"category": a["category"], "visit_minutes": a["visit_minutes"], "open_from": a["open_from"],
@@ -114,12 +114,12 @@ def _days(trip, selection, cat, tz):
     for it in trip["items"]:
         d = it["details"]
         if it["type"] == "flight":
-            f = cat.flights[it["catalog_id"]]
+            f = cat.get_flight(it["catalog_id"])
             stops = "direct" if f["stops"] == 0 else f"{f['stops']} stop"
             event(it["start"], "FLIGHT_DEPARTURE", it, f"Depart {f['from_airport']}: {it['name']} ({stops})",
-                  cat.airports[f["from_airport"]]["timezone"])
+                  cat.get_airport(f["from_airport"])["timezone"])
             event(it["end"], "FLIGHT_ARRIVAL", it, f"Land at {f['to_airport']}: {it['name']}",
-                  cat.airports[f["to_airport"]]["timezone"])
+                  cat.get_airport(f["to_airport"])["timezone"])
         elif it["type"] == "transfer":
             event(it["start"], "TRANSFER", it, f"{it['name']} ({d['from_point']} to {d['to_point']})", tz)
         elif it["type"] == "attraction":

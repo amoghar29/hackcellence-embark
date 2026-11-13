@@ -1,24 +1,27 @@
+from collections.abc import Iterator
 from typing import Annotated
 
-from fastapi import Depends, Request
+from fastapi import Depends
 
 from app.core import db
-from app.repositories.catalog_repo import Catalog
+from app.repositories.catalog_repo import CatalogRepository
 from app.repositories.package_repo import PackageRepository
 from app.services.catalog_service import CatalogService
 from app.services.change_service import ChangeService
 from app.services.package_service import PackageService
 
 
-def get_catalog(request: Request) -> Catalog:
-    return request.app.state.catalog
+def get_catalog() -> Iterator[CatalogRepository]:
+    """One catalog connection per request."""
+    with db.connect() as conn:
+        yield CatalogRepository(conn)
 
 
 def get_package_repository() -> PackageRepository:
     return PackageRepository(db.connect)
 
 
-CatalogDep = Annotated[Catalog, Depends(get_catalog)]
+CatalogDep = Annotated[CatalogRepository, Depends(get_catalog)]
 PackageRepositoryDep = Annotated[PackageRepository, Depends(get_package_repository)]
 
 

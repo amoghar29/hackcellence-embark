@@ -10,6 +10,8 @@ from datetime import datetime
 
 import psycopg
 
+from app.services.errors import IdempotencyKeyReused, SoldOut
+
 PART_TABLES = ("booking_flights", "booking_hotels", "booking_transfers", "booking_attractions")
 
 
@@ -70,14 +72,23 @@ class PackageRepository:
             }
             return b, selection
 
-    def book(self, trip_id: str) -> str | None:
-        """The 10-digit reservation number (the same one if already booked), or None for an unknown trip_id."""
+    def book(self, trip_id: str, key: str) -> str | None:
+        """Takes the seats and rooms and books the package in one transaction: if any part is sold out, nothing
+        is taken. The 10-digit reservation number (the same one if already booked), or None for an unknown trip_id.
+        Raises IdempotencyKeyReused if the key booked another package, SoldOut if a flight or room is gone."""
         with self._connect() as conn:
             b = conn.execute("SELECT reference FROM bookings WHERE id = %s FOR UPDATE", (trip_id,)).fetchone()
             if not b:
                 return None
+            # a concurrent insert of the same key waits here until the other transaction ends
+            conn.execute("INSERT INTO booking_idempotency_keys (key, booking_id) VALUES (%s, %s) "
+                         "ON CONFLICT DO NOTHING", (key, trip_id))
+            owner = conn.execute("SELECT booking_id FROM booking_idempotency_keys WHERE key = %s", (key,)).fetchone()
+            if owner["booking_id"] != trip_id:
+                raise IdempotencyKeyReused()
             if b["reference"]:
                 return b["reference"]
+            self._take_inventory(conn, trip_id)
             while True:
                 reference = str(secrets.randbelow(9 * 10**9) + 10**9)  # 10 digits, never starts with 0
                 try:
@@ -92,6 +103,29 @@ class PackageRepository:
         with self._connect() as conn:
             row = conn.execute("SELECT id FROM bookings WHERE reference = %s", (reference,)).fetchone()
             return row["id"] if row else None
+
+    @staticmethod
+    def _take_inventory(conn: psycopg.Connection, trip_id: str) -> None:
+        """Rows are taken in one order (flights by id, then rooms by id and night), so two bookings never deadlock.
+        Transfers and attractions have no inventory in the catalog; they are booked with the package row."""
+        flights = conn.execute(
+            "SELECT bf.flight_id, bf.seats, f.flight_number FROM booking_flights bf JOIN flights f USING (flight_id) "
+            "WHERE bf.booking_id = %s ORDER BY bf.flight_id", (trip_id,)).fetchall()
+        for f in flights:
+            if not conn.execute("UPDATE flights SET seats_left = seats_left - %s WHERE flight_id = %s "
+                                "AND seats_left >= %s", (f["seats"], f["flight_id"], f["seats"])).rowcount:
+                raise SoldOut("flight", f"Flight {f['flight_number']} no longer has {f['seats']} free seats.")
+        nights = conn.execute(
+            "SELECT bh.room_id, bh.rooms, n::date AS night, h.name AS hotel, r.name AS room "
+            "FROM booking_hotels bh JOIN rooms r USING (room_id) JOIN hotels h ON h.hotel_id = bh.hotel_id, "
+            "generate_series(bh.check_in, bh.check_out - 1, interval '1 day') n "
+            "WHERE bh.booking_id = %s ORDER BY bh.room_id, night", (trip_id,)).fetchall()
+        for n in nights:
+            if not conn.execute("UPDATE availability SET rooms_left = rooms_left - %s WHERE room_id = %s "
+                                "AND date = %s AND rooms_left >= %s",
+                                (n["rooms"], n["room_id"], n["night"], n["rooms"])).rowcount:
+                raise SoldOut("hotel", f"{n['hotel']} no longer has {n['rooms']} {n['room']} free "
+                                       f"on {n['night'].isoformat()}.")
 
     @staticmethod
     def _insert_parts(conn: psycopg.Connection, trip_id: str, selection: dict, trip: dict) -> None:

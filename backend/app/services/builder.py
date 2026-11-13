@@ -92,10 +92,7 @@ def city_plans(country, nights, cat):
 
 def matching_flights(cat, home, city, day, n, arriving):
     """Flights between the home airport and an airport serving the city on that local day, with n seats."""
-    here, there, when = (("from_airport", "to_airport", "arrival_local") if arriving
-                         else ("to_airport", "from_airport", "departure_local"))
-    found = [f for f in cat.flights.values()
-             if f[here] == home and f[when].date() == day and cat.serves(f[there], city)]
+    found = cat.flights(home, [city], day, arriving)
     verb = f"from {home} lands in {city}" if arriving else f"from {city} to {home} leaves"
     if not found:
         raise Blocked("NO_ARRIVAL_FLIGHT" if arriving else "NO_RETURN_FLIGHT", f"No flight {verb} on {day}.")
@@ -111,14 +108,14 @@ def matching_flights(cat, home, city, day, n, arriving):
 def _rooms(cat, city, check_in, check_out, A, C):
     """[(price, room, k)] for room types in the city that fit the travelers and are free every night."""
     nights = [check_in + timedelta(i) for i in range((check_out - check_in).days)]
-    fits = [(r, pricing.rooms_needed(r, A, C)) for r in cat.rooms.values() if cat.hotels[r["hotel_id"]]["city"] == city]
+    fits = [(r, pricing.rooms_needed(r, A, C)) for r in cat.rooms_in(city)]
     fits = [(r, k) for r, k in fits if k]
     if not fits:
         raise Blocked("NO_ROOM_FITS", f"No room type in {city} fits {people(A, C)} (each room needs an adult).")
     free = [(pricing.hotel_price(r, k, len(nights)), r, k) for r, k in fits
-            if all(cat.availability.get((r["room_id"], n), 0) >= k for n in nights)]
+            if all(cat.rooms_left(r["room_id"], n) >= k for n in nights)]
     if not free:
-        full = [str(n) for n in nights if all(cat.availability.get((r["room_id"], n), 0) < k for r, k in fits)]
+        full = [str(n) for n in nights if all(cat.rooms_left(r["room_id"], n) < k for r, k in fits)]
         raise Blocked("HOTEL_SOLD_OUT", f"No hotel in {city} has rooms for {people(A, C)} on every night from "
                        f"{check_in} to {check_out}" + (f" (sold out: {', '.join(full)})." if full else "."))
     return free
@@ -133,9 +130,7 @@ def airport_leg(cat, flights, hotel, A, C, arriving):
     best, seen_transfer = None, False
     for f in flights:
         airport = f["to_airport"] if arriving else f["from_airport"]
-        for t in cat.transfers.values():
-            if t["airport"] != airport or t["city"] != hotel["city"] or t["area"] not in (None, hotel["area"]):
-                continue
+        for t in cat.airport_transfers(airport, hotel["city"], hotel["area"]):
             seen_transfer = True
             if arriving:
                 pickup = first_pickup(t, f["arrival_local"] + timedelta(minutes=60), MAX_WAIT_AT_AIRPORT)
@@ -175,7 +170,7 @@ def _plan(request, plan, cat):
     for i, (city, ci, co) in enumerate(spans):
         best, why = None, {}
         for price, room, k in rooms[i]:
-            hotel = cat.hotels[room["hotel_id"]]
+            hotel = cat.get_hotel(room["hotel_id"])
             total, chosen = price, {}
             for arriving, flights, here in ((True, arrivals, i == 0), (False, returns, i == len(spans) - 1)):
                 if here:
@@ -215,7 +210,7 @@ def _plan(request, plan, cat):
         link = next(x for x in cat.country(request["country"])["links"] if (x["from_city"], x["to_city"]) == (a, b))
         best = None
         for tid in link["transfer_ids"]:
-            t = cat.transfers.get(tid)
+            t = cat.get_transfer(tid)
             if not t:
                 continue
             earliest = at(change_day, INTERCITY_FROM)
@@ -259,8 +254,8 @@ def _plan(request, plan, cat):
 def _open_attractions(cat, city, day):
     """[(attraction, visit start)] for attractions in the city that are open that day and fit a whole visit."""
     out = []
-    for a in cat.attractions.values():
-        if a["city"] != city or DAYS[day.weekday()] not in a["open_days"] or day in a["closed_dates"]:
+    for a in cat.attractions_in(city):
+        if DAYS[day.weekday()] not in a["open_days"] or day in a["closed_dates"]:
             continue
         opens, closes = parse_hhmm(a["open_from"]), parse_hhmm(a["open_until"])
         begin = max(opens, parse_hhmm(VISIT_FROM))
@@ -276,17 +271,13 @@ def _open_attractions(cat, city, day):
 def _country_flights(request, cat):
     """Blocker when no flight at all works for the country, so the reason is one clear sentence."""
     home, country, n = request["departure_city"], request["country"], request["adults"] + len(request["child_ages"])
-    codes = {a["code"] for a in cat.airports.values()
-             if any(cat.serves(a["code"], c["name"]) for c in cat.country(country)["cities"])}
+    cities = [c["name"] for c in cat.country(country)["cities"]]
     for arriving, day in ((True, request["start_date"]), (False, request["end_date"])):
+        found = cat.flights(home, cities, day, arriving)
         if arriving:
-            found = [f for f in cat.flights.values()
-                     if f["from_airport"] == home and f["to_airport"] in codes and f["arrival_local"].date() == day]
             none = f"No flight from {home} lands in {country} on {day}."
             route = f"from {home} to {country}"
         else:
-            found = [f for f in cat.flights.values()
-                     if f["to_airport"] == home and f["from_airport"] in codes and f["departure_local"].date() == day]
             none = f"No flight from {country} to {home} leaves on {day}."
             route = f"from {country} to {home}"
         if not found:

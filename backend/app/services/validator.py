@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta
 from app.core.timeutil import DAYS, in_window, minute_of_day, parse_hhmm
 from app.services import pricing
 
-TABLES = {"flight": "flights", "hotel": "hotels", "transfer": "transfers", "attraction": "attractions"}
+TYPES = ("flight", "hotel", "transfer", "attraction")
 REQUIRED_ITEM = ("item_id", "type", "catalog_id", "start", "quantity", "price_inr")
 
 
@@ -54,7 +54,7 @@ def validate(trip, cat, first_package=True):
     by = defaultdict(list)
     for it in trip["items"]:
         missing = [f for f in REQUIRED_ITEM if it.get(f) is None]
-        rec = getattr(cat, TABLES[it["type"]]).get(it.get("catalog_id")) if it.get("type") in TABLES else None
+        rec = getattr(cat, f"get_{it['type']}")(it.get("catalog_id")) if it.get("type") in TYPES else None
         if missing or rec is None:
             bad("FORMAT", f"item {it.get('item_id')}: missing {missing} or unknown {it.get('type')} {it.get('catalog_id')}")
         else:
@@ -75,7 +75,7 @@ def validate(trip, cat, first_package=True):
             bad("CITY_COUNTRY", f"{h['name']} is in {h['city']}, not in {country['name']}")
         night_count.update(_nights(ci, co))
         stays.append({"city": h["city"], "hotel": h, "ci": ci, "co": co})
-        room = cat.rooms.get(it.get("room_id"))
+        room = cat.get_room(it.get("room_id"))
         if not room or room["hotel_id"] != h["hotel_id"]:
             bad("ROOM_FIT", f"{it['item_id']}: room {it.get('room_id')} is not a room of {h['hotel_id']}")
             continue
@@ -83,7 +83,7 @@ def validate(trip, cat, first_package=True):
                 and N <= k * (room["max_adults"] + room["max_children"])):
             bad("ROOM_FIT", f"{k} x {room['room_id']} does not fit {A} adults and {C} children")
         for n in _nights(ci, co):
-            if cat.availability.get((room["room_id"], n), 0) < k:
+            if cat.rooms_left(room["room_id"], n) < k:
                 bad("ROOM_AVAILABILITY", f"{room['room_id']} has fewer than {k} rooms left on {n}")
         price(it, pricing.hotel_price(room, k, len(_nights(ci, co))))
     trip_nights = _nights(start, end)

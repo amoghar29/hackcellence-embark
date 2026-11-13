@@ -2,7 +2,7 @@
 import logging
 from typing import Any, NamedTuple
 
-from app.repositories.catalog_repo import Catalog
+from app.repositories.catalog_repo import CatalogRepository
 from app.repositories.package_repo import PackageRepository
 from app.services import builder, package
 from app.services.errors import NotFound
@@ -18,7 +18,7 @@ class SavedPackage(NamedTuple):
 
 
 class PackageService:
-    def __init__(self, cat: Catalog, repo: PackageRepository):
+    def __init__(self, cat: CatalogRepository, repo: PackageRepository):
         self._cat = cat
         self._repo = repo
 
@@ -51,8 +51,9 @@ class PackageService:
     def items(self, trip_id: str, type_: str) -> list[dict]:
         return [i for i in self.get(trip_id)["items"] if i["type"] == type_]
 
-    def book(self, trip_id: str) -> tuple[str, dict]:
-        reference = self._repo.book(trip_id)
+    def book(self, trip_id: str, key: str) -> tuple[str, dict]:
+        """Raises NotFound, errors.IdempotencyKeyReused or errors.SoldOut (then nothing is booked)."""
+        reference = self._repo.book(trip_id, key)
         if not reference:
             raise NotFound("Package")
         log.info("Package %s booked as %s", trip_id, reference)

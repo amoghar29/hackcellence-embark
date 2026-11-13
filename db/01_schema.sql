@@ -182,6 +182,13 @@ CREATE TABLE IF NOT EXISTS booking_attractions (
   UNIQUE (booking_id, attraction_id)     -- each attraction at most once
 );
 
+-- Idempotency-Key header of POST /book: a key books one package only.
+CREATE TABLE IF NOT EXISTS booking_idempotency_keys (
+  key        text PRIMARY KEY,
+  booking_id text NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 -- bookings <-> child tables reference each other, so these foreign keys are added last.
 DO $$
 BEGIN

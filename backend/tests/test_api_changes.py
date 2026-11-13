@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta
 import pytest
 
 from tests.check_trip import DAYS, check, load_catalog, mins
+from tests.test_api import key
 
 CAT = load_catalog()
 MENON = {"departure_city": "BLR", "country": "Japan", "start_date": "2027-04-10", "nights": 6,
@@ -197,7 +198,7 @@ def test_add_overlapping_attraction_refused(client, pkg):
 # ---------- booked packages ----------
 
 def test_booked_package_cannot_change(client, pkg):
-    client.post(f"/api/packages/{pkg['trip_id']}/book")
+    client.post(f"/api/packages/{pkg['trip_id']}/book", headers=key())
     att = items(pkg, "attraction")[0]
     r = client.patch(f"/api/packages/{pkg['trip_id']}", json={"action": "remove_attraction", "item_id": att["item_id"]})
     assert r.status_code == 409 and r.json()["code"] == "ALREADY_BOOKED"

@@ -2,7 +2,7 @@
 import logging
 from datetime import date
 
-from app.repositories.catalog_repo import Catalog
+from app.repositories.catalog_repo import CatalogRepository
 from app.repositories.package_repo import PackageRepository
 from app.services import changes, package
 from app.services.errors import AlreadyBooked
@@ -13,7 +13,7 @@ log = logging.getLogger(__name__)
 
 
 class ChangeService:
-    def __init__(self, cat: Catalog, packages: PackageService, repo: PackageRepository):
+    def __init__(self, cat: CatalogRepository, packages: PackageService, repo: PackageRepository):
         self._cat = cat
         self._packages = packages
         self._repo = repo
