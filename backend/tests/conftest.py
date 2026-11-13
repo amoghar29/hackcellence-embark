@@ -59,7 +59,7 @@ def menon_request():
 
 @pytest.fixture
 def menon_trip():
-    """A hand-built valid Menon package (Tokyo 3 nights, Kyoto 3 nights)."""
+    """A hand-built valid Menon package (Tokyo 3 nights, Kyoto 3 nights); items listed in tests/mutations.py."""
     with open(FIXTURES / "menon_trip.json", encoding="utf-8") as f:
         return copy.deepcopy(json.load(f))
 

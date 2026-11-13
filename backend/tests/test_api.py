@@ -67,7 +67,8 @@ def test_options_include_rules(client):
 BUILD_CASES = {
     "menon": MENON,
     "uae_from_delhi": request("DEL", "United Arab Emirates", "2027-04-05", 4, 2, (), 300000),
-    "min_nights_window_start": request("MAA", "Japan", "2027-04-01", 3, 1, (), 300000),
+    # first allowed night; lands at HND, leaves from NRT (both serve Tokyo)
+    "window_start_different_airports": request("DEL", "Japan", "2027-04-01", 3, 1, (), 300000),
     "max_nights_window_end": request("BLR", "Japan", "2027-04-10", 10, 2, (), 1000000),
     "big_family_many_rooms_vehicles": request("BLR", "United Arab Emirates", "2027-04-12", 6, 4, (0, 12), 1000000),
     "child_age_17": request("DEL", "Japan", "2027-04-03", 5, 1, (17,), 500000),
@@ -128,6 +129,29 @@ def test_children_are_optional(client):
     assert check(pkg, CAT) == []
 
 
+def test_same_request_gives_same_package(client):
+    first, second = search(client), search(client)
+    assert first["trip_id"] != second["trip_id"]
+    strip = lambda p: [{k: v for k, v in i.items()} for i in p["items"]]
+    assert strip(first) == strip(second) and first["total_inr"] == second["total_inr"]
+
+
+def test_search_is_fast_enough_for_the_demo(client):
+    import time
+
+    t = time.perf_counter()
+    search(client, BUILD_CASES["max_nights_window_end"])
+    assert time.perf_counter() - t < 3
+
+
+def test_frontend_dev_server_may_call_the_api(client):
+    r = client.options("/api/packages/search", headers={
+        "Origin": "http://localhost:5173", "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "content-type"})
+    assert r.status_code == 200
+    assert r.headers["access-control-allow-origin"] in ("*", "http://localhost:5173")
+
+
 # ---------- 1. search: invalid input (M1) ----------
 
 INVALID = {
@@ -168,7 +192,12 @@ def test_body_not_an_object(client, body):
 
 NO_PACKAGE = {
     "more_travelers_than_any_flight_has_seats": dict(MENON, adults=8, child_ages=[5, 7]),  # max seats_left is 9
+    "very_large_group": dict(MENON, adults=50, child_ages=[], budget_inr=100000000),
     "no_flight_lands_that_day": request("BOM", "Japan", "2027-04-03", 5, 2, (), 1000000),
+    "no_return_flight_that_day": request("BOM", "Japan", "2027-04-04", 4, 2, (), 1000000),
+    # lands at NRT (Tokyo only), only return is from KIX (Osaka/Kyoto): 2 cities need 4+ nights
+    "arrival_and_return_airports_need_two_cities_in_three_nights": request("MAA", "Japan", "2027-04-01", 3, 1, (),
+                                                                           1000000),
 }
 
 

@@ -42,10 +42,51 @@ Every error has the same shape, so the UI can show `error` and highlight `field`
 |---|---|---|---|
 | 400 | `INVALID_REQUEST` | A request value is missing or not valid | `field`: the request field to highlight |
 | 404 | `NOT_FOUND` | Unknown id or reservation number. `error` contains "not found" | |
-| 422 | `NO_PACKAGE` | The request is valid but no package can be built | `reasons`: list of strings |
-| 422 | `OVER_BUDGET` | Packages exist but none fits the budget | `budget_inr`, `cheapest_total_inr`, `over_by_inr`, `suggestion` |
-| 422 | `CHANGE_REFUSED` | Phase 2: the change would break a travel rule | `reasons` |
+| 422 | `NO_PACKAGE` | The request is valid but no package can be built | `reasons`, `blockers`, `suggestion`, `alternatives` |
+| 422 | `OVER_BUDGET` | Packages exist but none fits the budget | `budget_inr`, `cheapest_total_inr`, `over_by_inr`, `suggestion`, `alternatives` |
+| 422 | `CHANGE_REFUSED` | Phase 2: the change would break a travel rule | `reasons`, `blockers` |
 | 409 | `ALREADY_BOOKED` | Phase 2: changing a booked package | |
+
+### Reasons and recommendations (422)
+
+Every 422 says **why** and **what to do next**:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `error` | string | The main reason, ready to show |
+| `reasons` | list of strings | All reasons, most important first (at most 5) |
+| `blockers` | list | The same reasons for code: `{ "code", "part", "message" }`. `part` is `flight`, `hotel`, `transfer` or `attraction`, so the UI can mark that part |
+| `suggestion` | string | What the traveler can change, as one sentence. Never empty |
+| `alternatives` | list | Request changes that the backend has already built and that work: `{ "change": { ...request fields }, "total_inr" }`. Can be empty |
+
+To offer an alternative as a "try this" button, send the search again with `{ ...request, ...alternative.change }`. An alternative always returns 201 with the other request fields unchanged, including the budget.
+
+How alternatives are found: the backend builds the package again for nearby requests and keeps the ones that work.
+
+- `NO_PACKAGE`: start date up to 3 days earlier or later, then 1 night fewer or more, then the other departure cities.
+- `OVER_BUDGET`: the budget raised to `cheapest_total_inr`, and fewer nights (down to 3) that fit the current budget.
+
+When nothing nearby works, `alternatives` is `[]` and `suggestion` names the limit, for example "No flight on these dates has 10 free seats. Travel in a smaller group."
+
+#### Blocker codes
+
+A blocker stops one city plan. The response lists blockers only when **every** city plan is blocked; blockers common to all plans come first.
+
+| `code` | `part` | When | Example `message` |
+|---|---|---|---|
+| `NO_ARRIVAL_FLIGHT` | `flight` | No flight from the departure city lands on the start date at an airport that serves the first city | "No flight from BOM lands in Japan on 2027-04-03." |
+| `ARRIVAL_SEATS` | `flight` | Flights land that day, but none has a seat for every traveler | "Flights from BLR to Japan on 2027-04-10 have at most 9 free seats; you need 10." |
+| `NO_RETURN_FLIGHT` | `flight` | No flight to the departure city leaves on the last day from an airport that serves the last city | "No flight from Japan to BOM leaves on 2027-04-08." |
+| `RETURN_SEATS` | `flight` | Return flights leave that day, but none has a seat for every traveler | "Flights from Japan to BLR on 2027-04-16 have at most 2 free seats; you need 3." |
+| `NO_ROOM_FITS` | `hotel` | No room type in the city fits the travelers (each room needs an adult) | "No room type in Kyoto fits 1 adult and 6 children." |
+| `HOTEL_SOLD_OUT` | `hotel` | Room types fit, but none has enough rooms left on every night of the stay | "No hotel in Kyoto has 2 rooms free on every night from 2027-04-13 to 2027-04-16." |
+| `NO_AIRPORT_TRANSFER` | `transfer` | No airport transfer serves the city and area of any hotel that can be booked | "No transfer from AUH serves the available hotels in Abu Dhabi." |
+| `ARRIVAL_TOO_LATE` | `transfer` | Every arrival flight lands when no airport transfer is in service | "The flight lands at 23:40; airport transfers from KIX stop at 23:00." |
+| `RETURN_TOO_EARLY` | `transfer` | Every return flight leaves too early to reach the airport 180 minutes before, on the last day | "The return flight leaves at 02:10; no transfer reaches DXB by 23:10." |
+| `NO_INTERCITY` | `transfer` | No transfer between two cities of the plan runs on the city-change day | "No transfer from Dubai to Abu Dhabi runs on 2027-04-08." |
+| `NOT_ENOUGH_ATTRACTIONS` | `attraction` | A full day has no open attraction left in that city | "Abu Dhabi has no open attraction left for 2027-04-15." |
+
+A refused change (Phase 2) uses the same codes where they apply, for example `HOTEL_SOLD_OUT` for a hotel with no rooms on the stay's nights.
 
 ---
 
@@ -103,19 +144,32 @@ Request (the 7 form fields):
 
 Responses:
 
-- **201**: a [Package](#the-package-object), saved with `status: "PLANNED"`. The app chooses the cities and builds the cheapest package that passes every travel rule.
-- **400** `INVALID_REQUEST`: for example `{"code": "INVALID_REQUEST", "error": "The trip must end by 2027-04-20.", "field": "start_date"}`.
-- **422** `NO_PACKAGE`:
+- **201**: a [Package](#the-package-object), saved with `status: "PLANNED"`. The app chooses the cities and builds the cheapest package that passes every travel rule. The first package has one attraction on each full day, and none on the arrival day, on city-change days and on the last day.
+- **400** `INVALID_REQUEST`: the message says how to fix the value, for example `{"code": "INVALID_REQUEST", "error": "The trip must end by 2027-04-20. Start on or before 2027-04-15, or choose fewer nights.", "field": "start_date"}`.
+- **422** `NO_PACKAGE` (see [Reasons and recommendations](#reasons-and-recommendations-422)):
   ```json
-  { "code": "NO_PACKAGE", "error": "No package is possible for this request.",
-    "reasons": ["No flight from BOM lands in Japan on 2027-04-03 with 3 free seats."] }
+  { "code": "NO_PACKAGE",
+    "error": "No flight from BOM lands in Japan on 2027-04-03.",
+    "reasons": ["No flight from BOM lands in Japan on 2027-04-03."],
+    "blockers": [
+      { "code": "NO_ARRIVAL_FLIGHT", "part": "flight", "message": "No flight from BOM lands in Japan on 2027-04-03." }
+    ],
+    "suggestion": "A package is possible if you start on 2027-04-04, or fly from Delhi.",
+    "alternatives": [
+      { "change": { "start_date": "2027-04-04" }, "total_inr": 251200 },
+      { "change": { "departure_city": "DEL" }, "total_inr": 263900 }
+    ] }
   ```
 - **422** `OVER_BUDGET`:
   ```json
   { "code": "OVER_BUDGET", "error": "No package fits a budget of ₹10,000.",
     "budget_inr": 10000, "cheapest_total_inr": 266378, "over_by_inr": 256378,
-    "suggestion": "Raise the budget to ₹2,66,378, or try fewer nights." }
+    "suggestion": "Raise the budget to ₹2,66,378.",
+    "alternatives": [
+      { "change": { "budget_inr": 266378 }, "total_inr": 266378 }
+    ] }
   ```
+  When fewer nights fit the current budget, that is offered too: `"suggestion": "Raise the budget to ₹2,66,378, or take 4 nights (₹1,98,400)."` with `{ "change": { "nights": 4 }, "total_inr": 198400 }` in `alternatives`.
 
 ### `GET /api/packages/{trip_id}`
 
@@ -313,7 +367,18 @@ One change per call:
 { "action": "remove_attraction", "item_id": "i7" }
 ```
 
-**200**: the updated Package; affected items can carry `warnings`. **422** `CHANGE_REFUSED` with `error` and `reasons`. **409** `ALREADY_BOOKED`.
+**200**: the updated Package; affected items can carry `warnings`. **409** `ALREADY_BOOKED`. **422** `CHANGE_REFUSED` with `error`, `reasons` and `blockers`; the package is unchanged:
+
+```json
+{ "code": "CHANGE_REFUSED",
+  "error": "Kyoto Riverside Inn has no Family Room free on 2027-04-14.",
+  "reasons": ["Kyoto Riverside Inn has no Family Room free on 2027-04-14."],
+  "blockers": [
+    { "code": "HOTEL_SOLD_OUT", "part": "hotel", "message": "Kyoto Riverside Inn has no Family Room free on 2027-04-14." }
+  ] }
+```
+
+A change that breaks a rule with no blocker code (for example two visits that overlap) has the rule's message in `reasons` and `blockers: []`.
 
 ---
 
@@ -323,8 +388,8 @@ One change per call:
 2. Submit `POST /api/packages/search`.
    - 201: go to `#/package/{trip_id}`.
    - 400: show `error` next to `field`.
-   - 422 `NO_PACKAGE`: show `error` and `reasons`.
-   - 422 `OVER_BUDGET`: show the cheapest total, the gap and `suggestion`.
+   - 422 `NO_PACKAGE`: show `error`, `reasons` and `suggestion`. Offer each entry of `alternatives` as a button that searches again with that change.
+   - 422 `OVER_BUDGET`: show the cheapest total, the gap and `suggestion`, with the same buttons for `alternatives`.
 3. Package page: render `days` and the item cards; show `total_inr`, `budget_inr` and `remaining_inr`. A card click calls the detail endpoint with its `catalog_id`. Add an Export link to `/export` and a Book button.
 4. Book: `POST .../book`, then go to `#/reservation/{reference}`.
 5. Reservation page: `GET /api/reservations/{reference}`. On 404 show "Reservation not found".
