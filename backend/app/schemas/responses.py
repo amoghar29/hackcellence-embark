@@ -47,6 +47,7 @@ class HotelOption(BaseModel):
     price_inr: int
     price_diff_inr: int
     image: str
+    preview: dict | None = None  # the package this option gives; see docs/API.md
 
 
 class FlightOption(BaseModel):
@@ -61,6 +62,7 @@ class FlightOption(BaseModel):
     duration_minutes: int
     price_inr: int
     price_diff_inr: int
+    preview: dict | None = None  # the package this option gives; see docs/API.md
 
 
 class AttractionOption(BaseModel):
@@ -71,6 +73,7 @@ class AttractionOption(BaseModel):
     end: str
     price_inr: int
     image: str
+    preview: dict | None = None  # the package this option gives; see docs/API.md
 
 
 class PlanStop(BaseModel):
@@ -84,6 +87,7 @@ class CityPlanOption(BaseModel):
     price_diff_inr: int
     fits_budget: bool
     is_current: bool
+    preview: dict | None = None  # the package this option gives; see docs/API.md
 
 
 class CityPlanOptions(BaseModel):
@@ -100,3 +104,4 @@ class FlightOptions(BaseModel):
 
 class AttractionOptions(BaseModel):
     options: list[AttractionOption]
+    reason: str | None = None  # why there are no options on that day

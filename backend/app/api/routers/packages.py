@@ -61,4 +61,4 @@ def attraction_options(service: ChangeServiceDep, body: Annotated[Any, Body()] =
         day = date.fromisoformat(body["date"])
     except (TypeError, KeyError, ValueError):
         raise InvalidRequest("date", "Date must be a real date written as YYYY-MM-DD.") from None
-    return AttractionOptions(options=service.attraction_options(body, day))
+    return AttractionOptions(**service.attraction_options(body, day))

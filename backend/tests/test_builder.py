@@ -276,6 +276,25 @@ def test_second_visit_fits_the_day_when_the_budget_allows(cat):
             assert all(a["start"][11:16] >= builder.VISIT_FROM for a in v)  # not at midnight because a place is open
 
 
+def test_spare_attraction_fills_an_empty_travel_day_before_a_second_visit(cat):
+    # keep one attraction per day of the usual package (first visits + the arrival-day one): six for six days
+    by_day = {}
+    for a in sorted(of_type(builder.build(req(cat, budget_inr=HUGE), cat), "attraction"), key=lambda a: a["start"]):
+        by_day.setdefault(a["start"][:10], a["catalog_id"])
+    keep = set(by_day.values())
+    c = doctor(cat, "attractions", "attraction_id", lambda a: a if a["attraction_id"] in keep else None)
+    days = [a["start"][:10] for a in of_type(builder.build(req(c, budget_inr=HUGE), c), "attraction")]
+    assert sorted(days) == sorted(by_day)  # one visit on every day, none doubled up
+
+
+@pytest.mark.parametrize("budget", [260000, 300000])  # above the cheapest package, below every all-top-star one
+def test_best_rated_pick_has_the_most_stars_the_budget_allows(cat, budget):
+    r = req(cat, budget_inr=budget)
+    pick, _ = builder.build_picks(r, cat)["best_rated"]
+    assert pick["total_inr"] <= budget
+    assert all(pick["avg_stars"] >= t["avg_stars"] for t, _ in builder.build_many(r, cat))
+
+
 @pytest.mark.parametrize("budget", [350000, HUGE])
 def test_only_child_friendly_attractions_when_children_travel(cat, budget):
     trip = builder.build(req(cat, child_ages=[6], budget_inr=budget), cat)

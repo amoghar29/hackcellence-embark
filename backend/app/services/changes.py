@@ -86,30 +86,40 @@ def _check_plan(request, plan, cat):
     return plan
 
 
+def _earliest_visit_start(sel, day, a, cat):
+    """On a travel day (arrival or city change): the traveler reaches the city, checks in (CHECKIN_BUFFER) and travels
+    from the hotel to `a`; a visit cannot start before that. None on other days. Used both when a visit is added and
+    when a flight or hotel change moves the arrival, so the two never disagree."""
+    stays = sel["stays"]
+    reach = dict(zip([s["check_in"] for s in stays], _reach_times(sel, cat)))
+    if day not in reach:
+        return None
+    hotel = cat.get_hotel(next(s["hotel_id"] for s in stays if s["check_in"] <= day < s["check_out"]))
+    return reach[day], reach[day] + timedelta(minutes=CHECKIN_BUFFER + travel.for_catalog(cat).minutes(hotel, a))
+
+
 def _drop_missed_visits(request, sel, cat):
-    """G1: a later landing or another hotel moves the airport transfer; visits on the arrival day that would now
-    start before the traveler reaches the city are removed (notices() reports them)."""
-    leg = sel["arrival"]
-    reach = leg["pickup"] + timedelta(minutes=cat.get_transfer(leg["transfer_id"])["duration_minutes"])
-    sel["attractions"] = [v for v in sel["attractions"]
-                          if not (v["start"].date() == request["start_date"] and v["start"] < reach)]
+    """G1: a later landing or another hotel moves the arrival; travel-day visits that would now start before the
+    traveler can get there (_earliest_visit_start) are removed (notices() reports them)."""
+    def fits(v):
+        found = _earliest_visit_start(sel, v["start"].date(), cat.get_attraction(v["attraction_id"]), cat)
+        return found is None or v["start"] >= found[1]
+    sel["attractions"] = [v for v in sel["attractions"] if fits(v)]
 
 
 def _check_travel_day_visit(sel, a, start, cat):
     """Arrival and city-change days: one visit at most, starting after the traveler has reached the city,
     checked in (CHECKIN_BUFFER) and travelled from the hotel, and ending CLOSE_BUFFER before closing."""
     day = start.date()
-    stays = sel["stays"]
-    reach = dict(zip([s["check_in"] for s in stays], _reach_times(sel, cat)))
-    if day not in reach:
+    found = _earliest_visit_start(sel, day, a, cat)
+    if found is None:
         return
+    reach, earliest = found
     if any(v["start"].date() == day for v in sel["attractions"]):
         raise Refused([f"{day} is a travel day: only one experience fits."])
-    hotel = cat.get_hotel(next(s["hotel_id"] for s in stays if s["check_in"] <= day < s["check_out"]))
-    earliest = reach[day] + timedelta(minutes=CHECKIN_BUFFER + travel.for_catalog(cat).minutes(hotel, a))
     if start < earliest:
         raise Refused([f"{a['name']} can start at {earliest:%H:%M} at the earliest on {day}: you reach the city at "
-                       f"{reach[day]:%H:%M}, then check in and travel there."])
+                       f"{reach:%H:%M}, then check in and travel there."])
     closes = datetime.combine(day, datetime.min.time()) + timedelta(minutes=parse_hhmm(a["open_until"]) - CLOSE_BUFFER)
     if start + timedelta(minutes=a["visit_minutes"]) > closes:
         raise Refused([f"{a['name']} must end by {closes:%H:%M} ({CLOSE_BUFFER} min before it closes)."])
@@ -123,13 +133,14 @@ def notices(request, before, after, change, cat):
                                                "experiences were chosen again."})
     kept = {v["attraction_id"] for v in after["attractions"]}
     if change["action"] in ("change_hotel", "change_flight"):
-        leg = after["arrival"]
-        reach = leg["pickup"] + timedelta(minutes=cat.get_transfer(leg["transfer_id"])["duration_minutes"])
         for v in before["attractions"]:
             if v["attraction_id"] not in kept:
-                out.append({"level": "FIXED", "message": f"Removed {cat.get_attraction(v['attraction_id'])['name']}: it "
-                            f"would start at {v['start']:%H:%M}, before you reach {_stay_city(cat, after['stays'][0])} "
-                            f"at {reach:%H:%M}."})
+                a = cat.get_attraction(v["attraction_id"])
+                reach, earliest = _earliest_visit_start(after, v["start"].date(), a, cat) or (None, None)
+                why = (f"you now reach {a['city']} at {reach:%H:%M} and, after check-in and travel, can be there at "
+                       f"{earliest:%H:%M} at the earliest") if reach else "it no longer fits the day"
+                out.append({"level": "FIXED", "message": f"Removed {a['name']}: it would start at "
+                            f"{v['start']:%H:%M}, but {why}."})
     return out
 
 
@@ -289,6 +300,31 @@ def attraction_options(request, selection, day, cat):
                         "child_friendly": a["child_friendly"]})
             break
     return sorted(out, key=lambda o: (o["start"], o["attraction_id"]))
+
+
+def no_attraction_reason(request, selection, day, cat):
+    """Why attraction_options found nothing on `day`, in the traveler's words."""
+    if not request["start_date"] <= day <= request["end_date"]:
+        return f"{day:%d %b %Y} is not a day of this trip."
+    stays = selection["stays"]
+    city = _stay_city(cat, next((s for s in stays if s["check_in"] <= day < s["check_out"]), stays[-1]))
+    planned = [cat.get_attraction(v["attraction_id"]) for v in selection["attractions"] if v["start"].date() == day]
+    reach = dict(zip([s["check_in"] for s in stays], _reach_times(selection, cat))).get(day)
+    if reach and planned:
+        return (f"{day:%d %b} is a travel day: only one experience fits, and {planned[0]['name']} is already planned. "
+                "Remove it to pick another.")
+    if day == request["end_date"]:
+        return f"{day:%d %b} is your flight home: no other experience fits before you leave for the airport."
+    used = {v["attraction_id"] for v in selection["attractions"]}
+    open_ = [a for a in cat.list_attractions() if a["city"] == city and a["attraction_id"] not in used
+             and DAYS[day.weekday()] in a["open_days"]]
+    if not open_:
+        return f"Nothing else in {city} is open on {day:%A}."
+    if reach:
+        return (f"You reach {city} at {reach:%H:%M}. After check-in and travel, none of the {len(open_)} places open "
+                f"that day can be visited and left {CLOSE_BUFFER} minutes before it closes.")
+    return (f"{len(open_)} other places in {city} are open, but none fits around "
+            f"{', '.join(a['name'] for a in planned) or 'the day'} with travel time between visits.")
 
 
 def city_plan_options(request, selection, current_total, cat, limit=30):

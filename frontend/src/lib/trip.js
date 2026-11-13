@@ -42,6 +42,16 @@ export function stopsInOrder(pkg, details) {
   return out
 }
 
+// The trip line split by day, so each day can get its own colour; a day starts where the previous one ended.
+export function routeByDay(stops) {
+  const out = []
+  stops.forEach((s, i) => {
+    if (out.at(-1)?.date !== s.date) out.push({ date: s.date, pts: i ? [[stops[i - 1].lat, stops[i - 1].lng]] : [] })
+    out.at(-1).pts.push([s.lat, s.lng])
+  })
+  return out
+}
+
 // What changed between two package versions, for the "you changed X" banner.
 export function changeSummary(before, after) {
   const afterById = Object.fromEntries(after.items.map(i => [i.item_id, i]))
@@ -73,3 +83,6 @@ export function carouselPhotos(pkg) {
     return [{ path, title: i.name, type: i.type }]
   })
 }
+
+// Judges' trip format (handout section 6): the package without the fields that only the UI uses.
+export const tripExport = ({ request, selection, days, cities, nights, remaining_inr, ...trip }) => trip

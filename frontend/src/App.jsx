@@ -5,6 +5,7 @@ import Results from './pages/Results'
 import PackagePage from './pages/PackagePage'
 import BookingsPage from './pages/BookingsPage'
 import FindBookingPage from './pages/FindBookingPage'
+import Credits from './pages/Credits'
 import { parseHash } from './lib/route'
 
 export default function App() {
@@ -26,8 +27,10 @@ export default function App() {
     {route.name === 'bookings' && <BookingsPage />}
     {route.name === 'find' && <FindBookingPage />}
     {route.name === 'home' && <Landing />}
+    {route.name === 'credits' && <Credits />}
     {/* key forces a fresh load (and fresh booking key) when the trip or reservation changes */}
     {route.name === 'package' && <PackagePage key={route.id} id={route.id} />}
     {route.name === 'reservation' && <PackagePage key={route.ref} reference={route.ref} />}
+    <footer className="mx-auto max-w-6xl px-4 py-6 text-xs text-slate-500">Photos from Wikimedia Commons, see <a className="link" href="#/credits">photo credits</a>.</footer>
   </div>
 }

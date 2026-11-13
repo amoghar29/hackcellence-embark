@@ -1,13 +1,14 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { Img } from './ui'
 import { API } from '../lib/api'
 import { imageUrl } from '../lib/format'
 
 // Native scroll-snap carousel: swipe on touch, arrows and dots on desktop.
-export default function PhotoCarousel({ photos, className = 'h-64' }) {
+export default function PhotoCarousel({ photos, className = 'h-64', start = 0 }) {
   const box = useRef(null)
-  const [i, setI] = useState(0)
+  const [i, setI] = useState(start)
+  useEffect(() => { box.current?.scrollTo({ left: start * box.current.clientWidth, behavior: 'instant' }) }, []) // eslint-disable-line react-hooks/exhaustive-deps
   const go = n => { const el = box.current; if (!el) return; const k = Math.min(Math.max(n, 0), photos.length - 1); el.scrollTo({ left: k * el.clientWidth, behavior: 'smooth' }); setI(k) }
   if (!photos.length) return <Img src={null} className={`w-full ${className}`} />
   return <div className={`relative overflow-hidden bg-slate-200 ${className}`} role="group" aria-roledescription="carousel" aria-label="Trip photos">

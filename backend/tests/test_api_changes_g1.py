@@ -43,20 +43,15 @@ def test_change_always_returns_notices(client):
 def test_later_arrival_drops_the_visit_it_would_miss_and_says_so(client):
     fixed = 0
     for opt in flight_options(client, new_package(client)):
-        trip = new_package(client)
-        added = client.post("/api/packages/options/attractions",
-                            json=dict(package_body(trip), date=trip["start_date"])).json()["options"]
-        if not added:
+        with_visit = new_package(client)  # the builder already plans a visit on an arrival day it can reach in time
+        a = next((i for i in with_visit["items"] if i["type"] == "attraction" and i["start"][:10] == with_visit["start_date"]), None)
+        if not a:
             continue
-        a = added[0]
-        r = patch(client, trip, {"action": "add_attraction", "attraction_id": a["attraction_id"], "start": a["start"]})
-        assert r.status_code == 200, r.text
-        with_visit = r.json()
         r = change_arrival(client, with_visit, opt["flight_id"])
         body = r.json()
         assert r.status_code == 200, f"a visit that no longer fits must be removed, not refuse the flight: {body}"
         assert check({k: v for k, v in body.items() if k != "notices"}, CAT, first_package=False) == []
-        if not any(i["item_id"] == f"attraction-{a['attraction_id']}" for i in body["items"]):
+        if not any(i["item_id"] == a["item_id"] for i in body["items"]):
             fixed += 1
             assert any(n["level"] == "FIXED" and a["name"] in n["message"] for n in body["notices"]), body["notices"]
         else:

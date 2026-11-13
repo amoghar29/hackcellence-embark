@@ -3,12 +3,14 @@ import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import { Spinner } from './ui'
 import { API, getDetail } from '../lib/api'
-import { stopsInOrder } from '../lib/trip'
+import { routeByDay, stopsInOrder } from '../lib/trip'
 import { coordsOf, dayRoute, legOf } from '../lib/legs'
 import { GOOGLE_KEY, loadGoogleMaps } from '../lib/gmaps'
 import { duration, fmtDate, fmtTime, imageUrl } from '../lib/format'
 
 const COLORS = { hotel: '#d97706', attraction: '#e11d48' }
+// route colour per day (cycles on long trips); kept clear of the marker amber/rose
+const DAY_COLORS = ['#2563eb', '#16a34a', '#9333ea', '#0891b2', '#ea580c', '#4f46e5', '#65a30d', '#db2777']
 
 // The trip on a map: every hotel and experience in trip order, or one day (hotel → visits → hotel).
 // Clicking a planned place shows its photo, time and how you get there; "Details" opens the full record.
@@ -37,6 +39,9 @@ export default function MapView({ pkg, onOpen, day: shown, onDay }) {
     ? route.map((p, n) => ({ ...p, n, date: day, time: p.item.type === 'attraction' ? fmtTime(p.item.start) : '' }))  // the hotel is home; visits 1, 2
     : night ? [{ item: night, lat: night.details.lat, lng: night.details.lng, n: 1, date: day, time: '' }]
     : stopsInOrder(withCoords, coords)
+  const dayNo = d => pkg.days.findIndex(x => x.date === d)
+  const colorOf = d => DAY_COLORS[Math.max(0, dayNo(d)) % DAY_COLORS.length]
+  const lines = routeByDay(stops).map(l => ({ ...l, color: colorOf(l.date) }))
 
   // Google Maps (English) when the key works, else OpenStreetMap with English labels
   const [engine, setEngine] = useState(GOOGLE_KEY ? 'google' : 'osm')
@@ -51,10 +56,10 @@ export default function MapView({ pkg, onOpen, day: shown, onDay }) {
     const markers = stops.filter((s, i) => stops.findIndex(o => o.item.item_id === s.item.item_id) === i)  // a day route returns to its hotel: one marker
     if (engine === 'google') {
       let gone = false
-      loadGoogleMaps().then(g => { if (!gone) drawGoogle(g, el.current, stops, markers, day, onOpen) }).catch(() => !gone && setEngine('osm'))
+      loadGoogleMaps().then(g => { if (!gone) drawGoogle(g, el.current, lines, markers, day, onOpen) }).catch(() => !gone && setEngine('osm'))
       return () => { gone = true }
     }
-    return drawLeaflet(el.current, stops, markers, day, onOpen)
+    return drawLeaflet(el.current, stops, lines, markers, day, onOpen)
   }, [coords, day, engine])
 
   if (!coords) return <Spinner label="Placing your trip on the map…" />
@@ -66,15 +71,19 @@ export default function MapView({ pkg, onOpen, day: shown, onDay }) {
         {pkg.days.map(({ date: d }, n) => <option key={d} value={d}>Day {n + 1} · {fmtDate(d)}{visits.has(d) ? ' route' : ''}</option>)}
       </select>
     </label>
+    {!day && lines.length > 1 && <ul className="mb-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-600" aria-label="Route colour by day">
+      {lines.map(l => <li key={l.date} className="flex items-center gap-1">
+        <span className="inline-block h-1 w-4 rounded" style={{ background: l.color }} />Day {dayNo(l.date) + 1}</li>)}
+    </ul>}
     {stops.length ? <div key={`${day}-${engine}`} ref={el} className="h-[22rem] rounded-2xl border border-slate-200 lg:h-[calc(100dvh-9rem)]" role="application" aria-label="Trip map: hotels and experiences in order" />
       : <p className="rounded-xl bg-slate-50 p-6 text-slate-600">We couldn't load locations for this trip right now.</p>}
   </div>
 }
 
-function drawGoogle(g, node, stops, markers, day, onOpen) {
+function drawGoogle(g, node, lines, markers, day, onOpen) {
   const map = new g.Map(node, { mapTypeControl: false, streetViewControl: false, fullscreenControl: true, gestureHandling: 'cooperative' })
-  new g.Polyline({ map, path: stops.map(s => ({ lat: s.lat, lng: s.lng })), strokeColor: '#143b66', strokeWeight: 3,
-    strokeOpacity: day ? 1 : 0, icons: day ? [] : [{ icon: { path: 'M 0,-1 0,1', strokeOpacity: 1, scale: 3 }, offset: '0', repeat: '12px' }] })
+  lines.forEach(l => new g.Polyline({ map, path: l.pts.map(([lat, lng]) => ({ lat, lng })), strokeColor: l.color, strokeWeight: 3,
+    strokeOpacity: day ? 1 : 0, icons: day ? [] : [{ icon: { path: 'M 0,-1 0,1', strokeOpacity: 1, scale: 3 }, offset: '0', repeat: '12px' }] }))
   const info = new g.InfoWindow(), bounds = new g.LatLngBounds()
   let home = null
   markers.forEach(s => {
@@ -93,13 +102,13 @@ function drawGoogle(g, node, stops, markers, day, onOpen) {
   g.event.addListenerOnce(map, 'idle', () => map.getZoom() > 14 && map.setZoom(14))
 }
 
-function drawLeaflet(node, stops, markers, day, onOpen) {
+function drawLeaflet(node, stops, lines, markers, day, onOpen) {
   const m = L.map(node, { scrollWheelZoom: false })
   // CARTO's OpenStreetMap tiles label places in English (plain OSM tiles use the local script)
   L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
     { maxZoom: 18, subdomains: 'abcd', attribution: '© OpenStreetMap contributors © CARTO' }).addTo(m)
   const pts = stops.map(s => [s.lat, s.lng])
-  L.polyline(pts, { color: '#143b66', weight: 3, dashArray: day ? null : '6 6' }).addTo(m)
+  lines.forEach(l => L.polyline(l.pts, { color: l.color, weight: 3, dashArray: day ? null : '6 6' }).addTo(m))
   let home = null
   markers.forEach(s => {
     const hotel = s.item.type === 'hotel', size = hotel ? 40 : 30

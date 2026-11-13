@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { noResultView, altLabel, stopsInOrder, changeSummary, priceBreakdown, carouselPhotos } from './trip.js'
+import { noResultView, altLabel, stopsInOrder, routeByDay, changeSummary, priceBreakdown, carouselPhotos, tripExport } from './trip.js'
 
 test('NO_PACKAGE view uses blockers as typed reasons, keeps alternatives', () => {
   const v = noResultView({
@@ -75,4 +75,22 @@ test('carouselPhotos unique with titles', () => {
     { type: 'attraction', name: 'B', details: { image: '/i/b.jpg' } },
     { type: 'flight', name: 'F', details: {} }] })
   assert.deepEqual(ph, [{ path: '/i/a.jpg', title: 'H', type: 'hotel' }, { path: '/i/b.jpg', title: 'B', type: 'attraction' }])
+})
+
+test('tripExport keeps the trip format and drops UI-only fields', () => {
+  const pkg = { status: 'BOOKED', reference: '1234567890', country: 'Japan', items: [{ item_id: 'i1' }], total_inr: 5, budget_inr: 9,
+    request: {}, selection: {}, days: [], cities: [], nights: 6, remaining_inr: 4 }
+  const out = tripExport(pkg)
+  assert.deepEqual(Object.keys(out).sort(), ['budget_inr', 'country', 'items', 'reference', 'status', 'total_inr'])
+  assert.equal(out.reference, '1234567890')
+})
+
+test('routeByDay: one line per day, each joined to the previous day\'s last stop', () => {
+  const s = [{ date: 'a', lat: 1, lng: 1 }, { date: 'a', lat: 2, lng: 2 }, { date: 'b', lat: 3, lng: 3 }, { date: 'c', lat: 4, lng: 4 }]
+  assert.deepEqual(routeByDay(s), [
+    { date: 'a', pts: [[1, 1], [2, 2]] },
+    { date: 'b', pts: [[2, 2], [3, 3]] },
+    { date: 'c', pts: [[3, 3], [4, 4]] },
+  ])
+  assert.deepEqual(routeByDay([]), [])
 })

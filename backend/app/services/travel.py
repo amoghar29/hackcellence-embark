@@ -21,6 +21,12 @@ DAY_END = "20:00"       # back at the hotel by then
 CLOSE_BUFFER = 30       # a visit ends at least this long before the place closes
 STOP_BUFFER = 15        # minutes after a visit before moving on (exit, tickets, a coffee)
 CHECKIN_BUFFER = 30     # minutes at the hotel after reaching the city, before the first visit
+OVERRUN = 0.15          # a visit can run this much longer: kept free after it, before STOP_BUFFER and travel
+
+
+def overrun(a):
+    """Minutes kept free after a visit in case it runs long (OVERRUN of its visit time, rounded up)."""
+    return math.ceil(a["visit_minutes"] * OVERRUN)
 MATRIX_URL = "https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix"  # Routes API
 BATCH = 25              # 25 x 25 = 625 elements, the Routes API limit per request
 

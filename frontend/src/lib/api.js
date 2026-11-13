@@ -23,7 +23,5 @@ const sent = (pkg, extra) => ({ request: pkg.request, selection: pkg.selection, 
 export const book = (pkg, key) => call('/api/bookings', json('POST', sent(pkg), { 'Idempotency-Key': key }))
 export const getChangeOptions = (pkg, type, q) => call(`/api/packages/options/${type}s`, json('POST', sent(pkg, q)))
 export const getCityPlans = pkg => call('/api/packages/options/city-plans', json('POST', sent(pkg)))
-// M6 after booking: change it like a draft, then save the new selection on the reservation (one transaction).
-export const modifyReservation = (ref, pkg) => call(`/api/reservations/${ref}`, json('PUT', sent(pkg)))
 export const change = (pkg, one) => call('/api/packages/change', json('POST', sent(pkg, { change: one })))
 export const getCredits = () => call('/api/credits')

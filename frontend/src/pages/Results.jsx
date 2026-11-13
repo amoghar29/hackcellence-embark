@@ -40,8 +40,8 @@ function Picks({ list, picks }) {
 }
 
 function PackageCard({ pkg, idx, badges }) {
-  // random 6 photos, shuffled once per card mount (not on every re-render)
-  const photos = useMemo(() => carouselPhotos(pkg).sort(() => Math.random() - 0.5).slice(0, 6), [pkg])
+  // all photos, shuffled once per card mount (not on every re-render); the grid pages them 6 at a time
+  const photos = useMemo(() => carouselPhotos(pkg).sort(() => Math.random() - 0.5), [pkg])
   const over = pkg.remaining_inr < 0
   const t = pkg.traveler
   return <article className="grid overflow-hidden rounded-2xl border border-slate-200 bg-white md:grid-cols-[1fr_1.2fr]">

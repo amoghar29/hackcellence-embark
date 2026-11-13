@@ -11,6 +11,7 @@ allows for travel time between the hotel and the visits (see _plan_visits). No o
 """
 import logging
 from datetime import timedelta
+from itertools import product
 
 from app.core.timeutil import DAYS, at, first_pickup, last_pickup, parse_hhmm
 from app.services import package, pricing, travel, validator
@@ -22,7 +23,9 @@ STAGES = ["NO_DEPARTURE_FLIGHTS", "NO_CITY_PLAN", "NO_ARRIVAL_FLIGHT", "ARRIVAL_
           "NOT_ENOUGH_ATTRACTIONS", "RULE_CHECK"]  # in build order: a later code means the plan got further
 PARTS = {"FLIGHT": "flight", "SEATS": "flight", "ROOM": "hotel", "HOTEL": "hotel", "TRANSFER": "transfer",
          "LATE": "transfer", "EARLY": "transfer", "INTERCITY": "transfer", "ATTRACTIONS": "attraction"}
-MAX_WAIT_AT_AIRPORT = 240   # minutes after landing + 60 to wait for the first transfer
+RULE_PARTS = {"ATTRACTION": "attraction", "TRANSFER": "transfer", "SERVICE": "transfer", "PICKUP": "transfer",
+              "AIRPORT": "transfer", "HOTEL": "hotel", "ROOM": "hotel", "CITY": "hotel"}  # validator code -> part
+MAX_WAIT_AT_AIRPORT = 240  # minutes after landing + 60 to wait for the first transfer
 INTERCITY_FROM = "09:00"    # earliest departure on a city-change day
 VISIT_FROM = "10:00"        # a visit starts here, or at opening time if that is later
 
@@ -182,9 +185,9 @@ def build_plan(request, plan, cat, objective="cheapest"):
     rooms = [_rooms(cat, city, ci, co, A, C) for city, ci, co in spans]
 
     # the first and last hotel decide the airport transfers (by area), so choose them together with the flights
-    stays, legs, cost = [], {}, 0
+    choices = []  # per city: [(rank, room, k, chosen)], best first
     for i, (city, ci, co) in enumerate(spans):
-        best, why = None, {}
+        best, why = {}, {}
         for price, room, k in rooms[i]:
             hotel = cat.get_hotel(room["hotel_id"])
             total, chosen = price, {}
@@ -199,14 +202,14 @@ def build_plan(request, plan, cat, objective="cheapest"):
                     chosen[arriving] = leg
                     total += leg[0]
             if total is not None:
-                # ponytail: best_rated takes the top-star hotel per city even if a cheaper mix would fit the budget;
-                # such a plan is dropped for that pick. Search under the budget if that ever hides a good package.
                 rank = (-hotel["stars"] if objective == "best_rated" else 0,
                         sum(x[1]["duration_minutes"] for x in chosen.values()) if objective == "fastest" else 0,
                         total, room["room_id"])
-                if best is None or rank < best[0]:
-                    best = (rank, room, k, chosen)
-        if best is None:
+                # best_rated keeps the cheapest hotel at every star level; the budget chooses among them below
+                level = rank[0]
+                if level not in best or rank < best[level][0]:
+                    best[level] = (rank, room, k, chosen)
+        if not best:
             arriving = "ok" not in why.get(True, {"ok"})  # which side never worked for any hotel
             flights = arrivals if arriving else returns
             reasons = why[arriving]
@@ -221,13 +224,9 @@ def build_plan(request, plan, cat, objective="cheapest"):
             earliest = min(f["departure_local"] for f in flights)
             raise Blocked("RETURN_TOO_EARLY", f"Flights from {city} to {home} on {end} leave from {earliest:%H:%M}; "
                            "no transfer on that day reaches the airport 180 minutes before departure.")
-        (*_, total, _), room, k, chosen = best
-        cost += total
-        legs.update(chosen)
-        stays.append({"hotel_id": room["hotel_id"], "room_id": room["room_id"], "rooms": k,
-                      "check_in": ci, "check_out": co})
+        choices.append(sorted(best.values(), key=lambda b: b[0]))
 
-    intercity = []
+    intercity, moves = [], 0
     for (a, _, change_day), (b, _, _) in zip(spans, spans[1:]):
         link = next(x for x in cat.country(request["country"])["links"] if (x["from_city"], x["to_city"]) == (a, b))
         best = None
@@ -243,10 +242,34 @@ def build_plan(request, plan, cat, objective="cheapest"):
                     best = (key, t, pickup)
         if not best:
             raise Blocked("NO_INTERCITY", f"No transfer from {a} to {b} runs on {change_day}.")
-        cost += best[0][1]
+        moves += best[0][1]
         intercity.append({"transfer_id": best[1]["transfer_id"], "pickup": best[2]})
 
-    days, cost = _plan_visits(request, spans, stays, legs, intercity, cat, cost)
+    # one hotel per city: the most star-nights first (best_rated), then the cheapest. The first mix within the
+    # budget wins; if none fits, the first that works (it is then dropped for being over budget, as before).
+    nights = [(co - ci).days for _, ci, co in spans]
+    mixes = sorted(product(*choices), key=lambda m: (sum(b[0][0] * n for b, n in zip(m, nights)),
+                                                     sum(b[0][2] for b in m)))
+    found, blocked = None, None
+    for mix in mixes:
+        stays, legs, cost = [], {}, moves
+        for (rank, room, k, chosen), (_, ci, co) in zip(mix, spans):
+            cost += rank[2]
+            legs.update(chosen)
+            stays.append({"hotel_id": room["hotel_id"], "room_id": room["room_id"], "rooms": k,
+                          "check_in": ci, "check_out": co})
+        try:
+            days, cost = _plan_visits(request, spans, stays, legs, intercity, cat, cost)
+        except Blocked as e:
+            blocked = blocked or e
+            continue
+        found = found or (cost, stays, legs, days)
+        if cost <= request["budget_inr"]:
+            found = (cost, stays, legs, days)
+            break
+    if not found:
+        raise blocked
+    cost, stays, legs, days = found
     visits = [{"attraction_id": a["attraction_id"], "start": s} for plan in days.values() for a, s in plan]
 
     selection = {
@@ -298,13 +321,14 @@ def _plan_visits(request, spans, stays, legs, intercity, cat, cost):
     for day, city in sorted(full, key=lambda x: (len(options[x[0]]), x[0])):
         free = [a for a in options[day] if a["attraction_id"] not in used]
         if not free:
-            raise Blocked("NOT_ENOUGH_ATTRACTIONS", f"{city} has no open attraction left for {day}.")
+            raise Blocked("NOT_ENOUGH_ATTRACTIONS", _attraction_reason(cat, city, day, kids, used, plan))
         a = min(free, key=lambda a: (price(a), move.minutes(hotel[day], a), a["attraction_id"]))
         used.add(a["attraction_id"])
         cost += price(a)
         days[day] = plan(day, [a])
 
-    # second visits, then arrival / city-change days, while the package stays within the budget
+    # arrival / city-change days first (one visit on every day before any day gets two), then second
+    # visits, while the package stays within the budget
     # ponytail: greedy by travel then price; a knapsack would fit more visits into a tight budget
     extras = []
     for day, city in full:
@@ -313,13 +337,13 @@ def _plan_visits(request, spans, stays, legs, intercity, cat, cost):
             pair = sorted([first, a], key=lambda x: (move.minutes(hotel[day], x), x["attraction_id"]))  # nearest first
             fit = a["attraction_id"] not in used and (plan(day, pair) or plan(day, pair[::-1]))
             if fit:
-                extras.append((0, move.minutes(first, a), price(a), a["attraction_id"], day, a, fit))
+                extras.append((1, move.minutes(first, a), price(a), a["attraction_id"], day, a, fit))
     for day in leave:
         if day in hotel and day not in days:  # not the last day (no hotel that night)
             for a in cat.attractions_in(hotel[day]["city"]):
                 fit = a["attraction_id"] not in used and plan(day, [a])
                 if fit:
-                    extras.append((1, move.minutes(hotel[day], a), price(a), a["attraction_id"], day, a, fit))
+                    extras.append((0, move.minutes(hotel[day], a), price(a), a["attraction_id"], day, a, fit))
     filled = set()
     for _, _, p, aid, day, a, fit in sorted(extras, key=lambda e: e[:5]):
         if day not in filled and aid not in used and cost + p <= budget:
@@ -328,6 +352,27 @@ def _plan_visits(request, spans, stays, legs, intercity, cat, cost):
             cost += p
             days[day] = fit
     return days, cost
+
+
+def _attraction_reason(cat, city, day, kids, used, plan):
+    """Why no attraction is left for this day: how many are closed, not for children, too tight, or used."""
+    found = cat.attractions_in(city)
+    if not found:
+        return f"{city} has no attractions to visit on {day}."
+    counts = dict.fromkeys(("closed", "child", "timing", "used"), 0)
+    for a in found:
+        if DAYS[day.weekday()] not in a["open_days"] or day in a["closed_dates"]:
+            counts["closed"] += 1
+        elif kids and not a["child_friendly"]:
+            counts["child"] += 1
+        elif not plan(day, [a]):
+            counts["timing"] += 1
+        else:
+            counts["used"] += 1
+    words = {"closed": f"{{}} closed on {day}", "child": "{} not child-friendly (children travel)",
+             "timing": "{} cannot be visited in time that day", "used": "{} already used on another day"}
+    why = ", ".join(words[k].format(n) for k, n in counts.items() if n)
+    return f"{city} has no attraction left for {day}: {why}."
 
 
 def _schedule(hotel, stops, day, leave, move, kids):
@@ -346,8 +391,8 @@ def _schedule(hotel, stops, day, leave, move, kids):
         if end > at(day, "00:00") + timedelta(minutes=parse_hhmm(a["open_until"]) - CLOSE_BUFFER):
             return None
         out.append((a, start))
-        here, free = a, end + timedelta(minutes=STOP_BUFFER)
-    back = out[-1][1] + timedelta(minutes=out[-1][0]["visit_minutes"] + move.minutes(here, hotel))
+        here, free = a, end + timedelta(minutes=travel.overrun(a) + STOP_BUFFER)
+    back = out[-1][1] + timedelta(minutes=here["visit_minutes"] + travel.overrun(here) + move.minutes(here, hotel))
     return out if back <= at(day, DAY_END) else None
 
 
@@ -417,8 +462,11 @@ def _valid(request, cat, limit=1, objective="cheapest"):
                 break
             continue
         log.error("built package failed the rule check and was dropped: %s", problems)
-        blocked.append({"code": "RULE_CHECK", "part": "flight",
-                        "message": "A package was built but failed the rule check, so it was not returned."})
+        code = problems[0].split(":")[0]
+        part = next((p for k, p in RULE_PARTS.items() if k in code), "flight")
+        blocked.append({"code": "RULE_CHECK", "part": part,
+                        "message": f"A package was built but failed the rule check ({problems[0]}), "
+                                   "so it was not returned."})
     if valid:
         return valid, None
     if not blocked:

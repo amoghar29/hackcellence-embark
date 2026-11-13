@@ -8,6 +8,7 @@ export function parseHash(hash) {
   if (/^#\/?results/.test(hash || '')) return { name: 'results' }
   if (/^#\/?bookings/.test(hash || '')) return { name: 'bookings' }
   if (/^#\/?find/.test(hash || '')) return { name: 'find' }
+  if (/^#\/?credits/.test(hash || '')) return { name: 'credits' }
   const m = /^#\/?(package|reservation)\/([^/?]+)/.exec(hash || '')
   if (!m) return { name: 'home' }
   return m[1] === 'package' ? { name: 'package', id: m[2] } : { name: 'reservation', ref: m[2] }

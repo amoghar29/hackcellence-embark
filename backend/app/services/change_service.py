@@ -54,11 +54,25 @@ class ChangeService:
         return {**present(package.assemble(request, new, self._cat), request, new),
                 "notices": changes.notices(request, selection, new, change, self._cat)}
 
+    def _previewed(self, raw: Any, options: list[dict], body) -> list[dict]:
+        """Only options the change call accepts, each with the package it gives (what changes, what is removed,
+        the new total). Same check as apply(), so a listed option is never refused."""
+        out = []
+        for o in options:
+            try:
+                out.append({**o, "preview": self.apply(raw, body(o))})
+            except changes.Refused:
+                continue
+        return out
+
     def city_plan_options(self, raw: Any) -> list[dict]:
         self._for(raw)
         request, selection = self._packages.rebuild(raw)
         total = package.assemble(request, selection, self._cat)["total_inr"]
-        return changes.city_plan_options(request, selection, total, self._cat)
+        found = changes.city_plan_options(request, selection, total, self._cat)
+        current = [o for o in found if o["is_current"]]
+        return current + self._previewed(raw, [o for o in found if not o["is_current"]],
+                                         lambda o: {"action": "change_city_plan", "plan": o["plan"]})
 
     def hotel_options(self, raw: Any, city: str) -> list[dict]:
         self._for(raw)
@@ -66,14 +80,22 @@ class ChangeService:
         found = changes.hotel_options(request, selection, city, self._cat)
         if found is None:
             raise InvalidRequest("city", f"{city} is not a city of this package.")
-        return found
+        return self._previewed(raw, found, lambda o: {"action": "change_hotel", "city": city,
+                                                      "hotel_id": o["hotel_id"], "room_id": o["room_id"]})
 
     def flight_options(self, raw: Any, direction: str) -> list[dict]:
         self._for(raw)
         request, selection = self._packages.rebuild(raw)
-        return changes.flight_options(request, selection, direction, self._cat)
+        item_id = "flight-arrival" if direction == "ARRIVAL" else "flight-return"
+        return self._previewed(raw, changes.flight_options(request, selection, direction, self._cat),
+                               lambda o: {"action": "change_flight", "item_id": item_id, "flight_id": o["flight_id"]})
 
-    def attraction_options(self, raw: Any, day: date) -> list[dict]:
+    def attraction_options(self, raw: Any, day: date) -> dict:
+        """{"options", "reason"}: reason says why the day has no option, else None."""
         self._for(raw)
         request, selection = self._packages.rebuild(raw)
-        return changes.attraction_options(request, selection, day, self._cat)
+        found = self._previewed(raw, changes.attraction_options(request, selection, day, self._cat),
+                                lambda o: {"action": "add_attraction", "attraction_id": o["attraction_id"],
+                                           "start": o["start"]})
+        return {"options": found,
+                "reason": None if found else changes.no_attraction_reason(request, selection, day, self._cat)}

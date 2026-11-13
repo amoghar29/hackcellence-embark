@@ -56,11 +56,11 @@ export function Drawer({ title, onClose, children, wide }) {
   </dialog>
 }
 
-export function Modal({ onClose, children, label }) {
+export function Modal({ onClose, children, label, width = 'w-[min(34rem,calc(100%-2rem))]' }) {
   const ref = useRef(null)
   useEffect(() => { ref.current?.showModal() }, [])
   return <dialog ref={ref} onClose={onClose} aria-label={label} onClick={e => e.target === ref.current && onClose()}
-    className="m-auto w-[min(34rem,calc(100%-2rem))] rounded-2xl bg-white p-0 shadow-2xl backdrop:bg-black/50">
+    className={`m-auto ${width} max-w-none overflow-hidden rounded-2xl bg-white p-0 shadow-2xl backdrop:bg-black/50`}>
     {children}
   </dialog>
 }

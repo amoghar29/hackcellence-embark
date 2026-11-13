@@ -55,7 +55,7 @@ def day_legs(selection, cat):
                 w.append(f"Only {max(gap, 0)} min after {here['name']}; getting here takes about "
                          f"{came['minutes']} min.")
             out[a["attraction_id"]] = {"travel_from": came, "travel_back": None, "warnings": w}
-            here, free = a, v["start"] + timedelta(minutes=a["visit_minutes"])
+            here, free = a, v["start"] + timedelta(minutes=a["visit_minutes"] + travel.overrun(a))
         if hotel:
             back = {"name": hotel["name"], "lat": hotel["lat"], "lng": hotel["lng"], **move.leg(here, hotel)}
             out[here["attraction_id"]]["travel_back"] = back
