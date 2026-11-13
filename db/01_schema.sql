@@ -118,9 +118,17 @@ CREATE TABLE IF NOT EXISTS attractions (
 );
 
 -- ---------- bookings ----------
+-- A booking exists only once it is booked: search saves nothing. Its key is the 10-digit reservation number.
+-- Older databases had a trip_id key and PLANNED rows; those tables are dropped once (dev data only).
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'bookings' AND column_name = 'id') THEN
+    DROP TABLE booking_attractions, booking_hotels, booking_transfers, booking_flights, bookings CASCADE;
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS bookings (
-  id                          text PRIMARY KEY,   -- trip_id
+  reference                   char(10) PRIMARY KEY,
   home_airport                text NOT NULL REFERENCES airports(code),
   country_code                text NOT NULL,
   start_date                  date NOT NULL,
@@ -130,20 +138,18 @@ CREATE TABLE IF NOT EXISTS bookings (
   child_ages                  int[] NOT NULL,
   budget_inr                  int NOT NULL,
   total_inr                   int NOT NULL,
-  status                      text NOT NULL DEFAULT 'PLANNED',  -- PLANNED | BOOKED
-  reference                   char(10) UNIQUE,                  -- set on book
-  idempotency_key             text UNIQUE,                      -- Idempotency-Key header of POST /book; set on book
+  idempotency_key             text NOT NULL UNIQUE,  -- Idempotency-Key header of POST /api/bookings
+  payload_hash                text NOT NULL,         -- of the request and selection; a replay must match it
   arrival_flight_booking_id   int,   -- -> booking_flights.id
   return_flight_booking_id    int,   -- -> booking_flights.id
   arrival_transfer_booking_id int,   -- -> booking_transfers.id (airport -> first hotel)
   return_transfer_booking_id  int,   -- -> booking_transfers.id (last hotel -> airport)
-  created_at                  timestamptz NOT NULL DEFAULT now(),
-  updated_at                  timestamptz NOT NULL DEFAULT now()
+  created_at                  timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS booking_flights (
   id         int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  booking_id text NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+  booking_id char(10) NOT NULL REFERENCES bookings(reference) ON DELETE CASCADE,
   flight_id  text NOT NULL REFERENCES flights(flight_id),
   seats      int NOT NULL,
   price_inr  int NOT NULL
@@ -151,7 +157,7 @@ CREATE TABLE IF NOT EXISTS booking_flights (
 
 CREATE TABLE IF NOT EXISTS booking_hotels (
   id         int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  booking_id text NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+  booking_id char(10) NOT NULL REFERENCES bookings(reference) ON DELETE CASCADE,
   position   int NOT NULL,               -- order of the cities
   hotel_id   text NOT NULL REFERENCES hotels(hotel_id),
   room_id    text NOT NULL REFERENCES rooms(room_id),
@@ -164,7 +170,7 @@ CREATE TABLE IF NOT EXISTS booking_hotels (
 
 CREATE TABLE IF NOT EXISTS booking_transfers (
   id          int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  booking_id  text NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+  booking_id  char(10) NOT NULL REFERENCES bookings(reference) ON DELETE CASCADE,
   transfer_id text NOT NULL REFERENCES transfers(transfer_id),
   pickup_at   timestamp NOT NULL,
   arrive_at   timestamp NOT NULL,
@@ -174,7 +180,7 @@ CREATE TABLE IF NOT EXISTS booking_transfers (
 
 CREATE TABLE IF NOT EXISTS booking_attractions (
   id            int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  booking_id    text NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+  booking_id    char(10) NOT NULL REFERENCES bookings(reference) ON DELETE CASCADE,
   attraction_id text NOT NULL REFERENCES attractions(attraction_id),
   start_at      timestamp NOT NULL,
   end_at        timestamp NOT NULL,

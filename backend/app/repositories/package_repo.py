@@ -1,12 +1,11 @@
-"""Saved packages and reservations (the booking tables in db/01_schema.sql).
+"""Reservations (the booking tables in db/01_schema.sql). Nothing is stored before booking.
 
-Only the choices are stored (which flight, room, transfer, visit, and when). The package shown to the
-traveler is rebuilt from them and the catalog, so it survives a restart unchanged.
+Each section of a package is its own row, linked to the booking by its reservation number. The package shown
+to the traveler is rebuilt from those rows and the catalog, so it survives a restart unchanged.
 """
 import secrets
-import uuid
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import psycopg
 
@@ -19,39 +18,49 @@ class PackageRepository:
     def __init__(self, connect: Callable[[], psycopg.Connection]):
         self._connect = connect
 
-    def save(self, request: dict, selection: dict, trip: dict, country_code: str) -> str:
-        trip_id = uuid.uuid4().hex[:12]
+    def book(self, request: dict, selection: dict, trip: dict, country_code: str, key: str, payload_hash: str) -> str:
+        """Books the whole package in ONE transaction: takes the seats and rooms, then writes the booking and one row
+        per flight, hotel, transfer and attraction. If any step fails (a sold-out part, a failed insert) nothing
+        is kept. Returns the 10-digit reservation number; the same key with the same package returns the number it
+        got before. Raises IdempotencyKeyReused (the key booked another package) or SoldOut."""
         with self._connect() as conn:
-            conn.execute(
-                "INSERT INTO bookings (id, home_airport, country_code, start_date, end_date, nights, adults, "
-                "child_ages, budget_inr, total_inr) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                (trip_id, request["departure_city"], country_code, request["start_date"], request["end_date"],
-                 request["nights"], request["adults"], request["child_ages"], request["budget_inr"],
-                 trip["total_inr"]))
-            self._insert_parts(conn, trip_id, selection, trip)
-        return trip_id
+            # one request per key at a time, so a replay waits for the first and then finds its booking
+            conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (key,))
+            done = conn.execute("SELECT reference, payload_hash FROM bookings WHERE idempotency_key = %s",
+                                (key,)).fetchone()
+            if done:
+                if done["payload_hash"] != payload_hash:
+                    raise IdempotencyKeyReused()
+                return done["reference"]
+            self._take_inventory(conn, selection, trip)
+            while True:
+                reference = str(secrets.randbelow(9 * 10**9) + 10**9)  # 10 digits, never starts with 0
+                try:
+                    with conn.transaction():  # a savepoint: a taken number retries without losing the inventory
+                        conn.execute(
+                            "INSERT INTO bookings (reference, home_airport, country_code, start_date, end_date, nights, "
+                            "adults, child_ages, budget_inr, total_inr, idempotency_key, payload_hash) "
+                            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                            (reference, request["departure_city"], country_code, request["start_date"],
+                             request["end_date"], request["nights"], request["adults"], request["child_ages"],
+                             request["budget_inr"], trip["total_inr"], key, payload_hash))
+                    break
+                except psycopg.errors.UniqueViolation as e:
+                    if e.diag.constraint_name != "bookings_pkey":
+                        raise
+            self._insert_parts(conn, reference, selection, trip)
+            return reference
 
-    def update(self, trip_id: str, selection: dict, trip: dict) -> None:
-        """Replaces the parts of a saved package in one transaction."""
+    def load(self, reference: str) -> tuple[dict, dict] | None:
+        """(booking row, selection), or None for an unknown reference."""
         with self._connect() as conn:
-            conn.execute(
-                "UPDATE bookings SET arrival_flight_booking_id = NULL, return_flight_booking_id = NULL, "
-                "arrival_transfer_booking_id = NULL, return_transfer_booking_id = NULL, total_inr = %s WHERE id = %s",
-                (trip["total_inr"], trip_id))
-            for table in PART_TABLES:
-                conn.execute(f"DELETE FROM {table} WHERE booking_id = %s", (trip_id,))
-            self._insert_parts(conn, trip_id, selection, trip)
-
-    def load(self, trip_id: str) -> tuple[dict, dict] | None:
-        """(booking row, selection), or None for an unknown trip_id."""
-        with self._connect() as conn:
-            b = conn.execute("SELECT * FROM bookings WHERE id = %s", (trip_id,)).fetchone()
+            b = conn.execute("SELECT * FROM bookings WHERE reference = %s", (reference,)).fetchone()
             if not b:
                 return None
 
             def rows(table, order):
                 return conn.execute(f"SELECT * FROM {table} WHERE booking_id = %s ORDER BY {order}",
-                                    (trip_id,)).fetchall()
+                                    (reference,)).fetchall()
 
             flights = {r["id"]: r for r in rows("booking_flights", "id")}
             transfers = {r["id"]: r for r in rows("booking_transfers", "pickup_at, id")}
@@ -72,79 +81,48 @@ class PackageRepository:
             }
             return b, selection
 
-    def book(self, trip_id: str, key: str) -> str | None:
-        """Takes the seats and rooms and books the package in one transaction: if any part is sold out, nothing
-        is taken. The 10-digit reservation number (the same one if already booked), or None for an unknown trip_id.
-        Raises IdempotencyKeyReused if the key booked another package, SoldOut if a flight or room is gone."""
+    def references(self) -> list[str]:
+        """Every reservation number, newest first."""
         with self._connect() as conn:
-            b = conn.execute("SELECT reference FROM bookings WHERE id = %s FOR UPDATE", (trip_id,)).fetchone()
-            if not b:
-                return None
-            if conn.execute("SELECT 1 FROM bookings WHERE idempotency_key = %s AND id <> %s", (key, trip_id)).fetchone():
-                raise IdempotencyKeyReused()
-            if b["reference"]:
-                return b["reference"]
-            self._take_inventory(conn, trip_id)
-            while True:
-                reference = str(secrets.randbelow(9 * 10**9) + 10**9)  # 10 digits, never starts with 0
-                try:
-                    with conn.transaction():
-                        conn.execute("UPDATE bookings SET status = 'BOOKED', reference = %s, idempotency_key = %s, "
-                                     "updated_at = now() WHERE id = %s", (reference, key, trip_id))
-                    return reference
-                except psycopg.errors.UniqueViolation as e:
-                    if e.diag.constraint_name == "bookings_idempotency_key_key":  # another package took the key meanwhile
-                        raise IdempotencyKeyReused()
-
-    def booked_trip_ids(self) -> list[str]:
-        with self._connect() as conn:
-            rows = conn.execute("SELECT id FROM bookings WHERE status = 'BOOKED' ORDER BY updated_at DESC, id").fetchall()
-            return [r["id"] for r in rows]
-
-    def trip_id_for(self, reference: str) -> str | None:
-        with self._connect() as conn:
-            row = conn.execute("SELECT id FROM bookings WHERE reference = %s", (reference,)).fetchone()
-            return row["id"] if row else None
+            rows = conn.execute("SELECT reference FROM bookings ORDER BY created_at DESC, reference").fetchall()
+            return [r["reference"] for r in rows]
 
     @staticmethod
-    def _take_inventory(conn: psycopg.Connection, trip_id: str) -> None:
+    def _take_inventory(conn: psycopg.Connection, selection: dict, trip: dict) -> None:
         """Rows are taken in one order (flights by id, then rooms by id and night), so two bookings never deadlock.
-        Transfers and attractions have no inventory in the catalog; they are booked with the package row."""
-        flights = conn.execute(
-            "SELECT bf.flight_id, bf.seats, f.flight_number FROM booking_flights bf JOIN flights f USING (flight_id) "
-            "WHERE bf.booking_id = %s ORDER BY bf.flight_id", (trip_id,)).fetchall()
+        Transfers and attractions have no inventory in the catalog; they are booked with the package."""
+        flights = sorted((i for i in trip["items"] if i["type"] == "flight"), key=lambda i: i["catalog_id"])
         for f in flights:
             if not conn.execute("UPDATE flights SET seats_left = seats_left - %s WHERE flight_id = %s "
-                                "AND seats_left >= %s", (f["seats"], f["flight_id"], f["seats"])).rowcount:
-                raise SoldOut("flight", f"Flight {f['flight_number']} no longer has {f['seats']} free seats.")
-        nights = conn.execute(
-            "SELECT bh.room_id, bh.rooms, n::date AS night, h.name AS hotel, r.name AS room "
-            "FROM booking_hotels bh JOIN rooms r USING (room_id) JOIN hotels h ON h.hotel_id = bh.hotel_id, "
-            "generate_series(bh.check_in, bh.check_out - 1, interval '1 day') n "
-            "WHERE bh.booking_id = %s ORDER BY bh.room_id, night", (trip_id,)).fetchall()
-        for n in nights:
+                                "AND seats_left >= %s", (f["quantity"], f["catalog_id"], f["quantity"])).rowcount:
+                raise SoldOut("flight", f"Flight {f['details']['flight_number']} no longer has {f['quantity']} "
+                                        "free seats.")
+        hotels = {i["item_id"]: i for i in trip["items"] if i["type"] == "hotel"}
+        nights = sorted(((s["room_id"], s["check_in"] + timedelta(n), s["rooms"], hotels[f"hotel-{k}"])
+                         for k, s in enumerate(selection["stays"], 1)
+                         for n in range((s["check_out"] - s["check_in"]).days)), key=lambda x: x[:2])
+        for room_id, night, rooms, hotel in nights:
             if not conn.execute("UPDATE availability SET rooms_left = rooms_left - %s WHERE room_id = %s "
-                                "AND date = %s AND rooms_left >= %s",
-                                (n["rooms"], n["room_id"], n["night"], n["rooms"])).rowcount:
-                raise SoldOut("hotel", f"{n['hotel']} no longer has {n['rooms']} {n['room']} free "
-                                       f"on {n['night'].isoformat()}.")
+                                "AND date = %s AND rooms_left >= %s", (rooms, room_id, night, rooms)).rowcount:
+                raise SoldOut("hotel", f"{hotel['name']} no longer has {rooms} {hotel['details']['room_name']} free "
+                                       f"on {night.isoformat()}.")
 
     @staticmethod
-    def _insert_parts(conn: psycopg.Connection, trip_id: str, selection: dict, trip: dict) -> None:
+    def _insert_parts(conn: psycopg.Connection, reference: str, selection: dict, trip: dict) -> None:
         prices = _prices(trip)
 
         def flight(leg, key):
             return conn.execute(
                 "INSERT INTO booking_flights (booking_id, flight_id, seats, price_inr) "
                 "VALUES (%s, %s, %s, %s) RETURNING id",
-                (trip_id, leg["flight_id"], *prices[key])).fetchone()["id"]
+                (reference, leg["flight_id"], *prices[key])).fetchone()["id"]
 
         def transfer(leg, key):
             quantity, price, arrive = prices[key]
             return conn.execute(
                 "INSERT INTO booking_transfers (booking_id, transfer_id, pickup_at, arrive_at, quantity, price_inr) "
                 "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
-                (trip_id, leg["transfer_id"], leg["pickup"], arrive, quantity, price)).fetchone()["id"]
+                (reference, leg["transfer_id"], leg["pickup"], arrive, quantity, price)).fetchone()["id"]
 
         ids = (flight(selection["arrival"], "flight-arrival"), flight(selection["return"], "flight-return"),
                transfer(selection["arrival"], "transfer-arrival"), transfer(selection["return"], "transfer-return"))
@@ -154,17 +132,17 @@ class PackageRepository:
             conn.execute(
                 "INSERT INTO booking_hotels (booking_id, position, hotel_id, room_id, check_in, check_out, rooms, "
                 "price_inr) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-                (trip_id, n, s["hotel_id"], s["room_id"], s["check_in"], s["check_out"], s["rooms"],
+                (reference, n, s["hotel_id"], s["room_id"], s["check_in"], s["check_out"], s["rooms"],
                  prices[f"hotel-{n}"][1]))
         for v in selection["attractions"]:
             tickets, price, end = prices[f"attraction-{v['attraction_id']}"]
             conn.execute(
                 "INSERT INTO booking_attractions (booking_id, attraction_id, start_at, end_at, tickets, price_inr) "
-                "VALUES (%s, %s, %s, %s, %s, %s)", (trip_id, v["attraction_id"], v["start"], end, tickets, price))
+                "VALUES (%s, %s, %s, %s, %s, %s)", (reference, v["attraction_id"], v["start"], end, tickets, price))
         conn.execute(
             "UPDATE bookings SET arrival_flight_booking_id = %s, return_flight_booking_id = %s, "
-            "arrival_transfer_booking_id = %s, return_transfer_booking_id = %s, updated_at = now() WHERE id = %s",
-            (*ids, trip_id))
+            "arrival_transfer_booking_id = %s, return_transfer_booking_id = %s WHERE reference = %s",
+            (*ids, reference))
 
 
 def _prices(trip: dict) -> dict:

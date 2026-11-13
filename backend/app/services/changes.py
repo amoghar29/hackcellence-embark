@@ -1,4 +1,4 @@
-"""Changing a package (M6, G1, G2): one change at a time, on the stored selection.
+"""Changing a package (M6, G1, G2, G3): one change at a time, on the stored selection.
 
 A change is applied to a copy, the airport transfer is re-picked when the hotel or flight it depends on
 changes, and the whole package is checked again by the validator. A refused change changes nothing.
@@ -66,6 +66,51 @@ def _room_choice(request, stay, hotel, room, cat):
     return k
 
 
+def _check_plan(request, plan, cat):
+    """[(city, nights)] for a valid plan of this request's country, else Refused with the reason."""
+    try:
+        plan = [(stop["city"], stop["nights"]) for stop in plan]
+    except (TypeError, KeyError):
+        raise Refused(['Send the plan as a list like [{"city": "Tokyo", "nights": 3}, ...].'])
+    least = cat.destinations["rules"]["min_nights_per_city"]
+    if sum(n for _, n in plan) != request["nights"]:
+        raise Refused([f"The plan has {sum(n for _, n in plan)} nights; the trip has {request['nights']}."])
+    short = next((c for c, n in plan if n < least), None)
+    if short:
+        raise Refused([f"{short} needs at least {least} nights."])
+    if plan not in builder.city_plans(request["country"], request["nights"], cat):
+        raise Refused([f"{' to '.join(c for c, _ in plan)} is not a route of cities in {request['country']} "
+                       "(each city once, and each hop must be a listed link)."])
+    return plan
+
+
+def _drop_missed_visits(request, sel, cat):
+    """G1: a later landing or another hotel moves the airport transfer; visits on the arrival day that would now
+    start before the traveler reaches the city are removed (notices() reports them)."""
+    leg = sel["arrival"]
+    reach = leg["pickup"] + timedelta(minutes=cat.get_transfer(leg["transfer_id"])["duration_minutes"])
+    sel["attractions"] = [v for v in sel["attractions"]
+                          if not (v["start"].date() == request["start_date"] and v["start"] < reach)]
+
+
+def notices(request, before, after, change, cat):
+    """What the traveler should be told about a change that was applied: [{"level", "message"}]."""
+    out = []
+    if change["action"] == "change_city_plan":
+        out.append({"level": "INFO", "message": "The package was built again for the new cities, so the "
+                                               "experiences were chosen again."})
+    kept = {v["attraction_id"] for v in after["attractions"]}
+    if change["action"] in ("change_hotel", "change_flight"):
+        leg = after["arrival"]
+        reach = leg["pickup"] + timedelta(minutes=cat.get_transfer(leg["transfer_id"])["duration_minutes"])
+        for v in before["attractions"]:
+            if v["attraction_id"] not in kept:
+                out.append({"level": "FIXED", "message": f"Removed {cat.get_attraction(v['attraction_id'])['name']}: it "
+                            f"would start at {v['start']:%H:%M}, before you reach {_stay_city(cat, after['stays'][0])} "
+                            f"at {reach:%H:%M}."})
+    return out
+
+
 def apply(request, selection, change, cat):
     """Returns the new selection. Raises Refused with the reasons; the given selection is not touched."""
     if not isinstance(change, dict):
@@ -118,6 +163,13 @@ def apply(request, selection, change, cat):
         sel["attractions"].append({"attraction_id": a["attraction_id"], "start": start})
         sel["attractions"].sort(key=lambda v: v["start"])
 
+    elif action == "change_city_plan":
+        plan = _check_plan(request, change.get("plan"), cat)
+        try:
+            sel = builder.build_plan(request, plan, cat)[1]  # flights, hotels, transfers and visits are chosen again
+        except builder.Blocked as e:
+            raise Refused([e.blocker["message"]], [e.blocker])
+
     elif action == "remove_attraction":
         aid = (change.get("item_id") or "").removeprefix("attraction-")
         if aid not in [v["attraction_id"] for v in sel["attractions"]]:
@@ -125,10 +177,14 @@ def apply(request, selection, change, cat):
         sel["attractions"] = [v for v in sel["attractions"] if v["attraction_id"] != aid]
 
     else:
-        raise Refused(["Unknown action. Use change_hotel, change_flight, add_attraction or remove_attraction."])
+        raise Refused(["Unknown action. Use change_hotel, change_flight, change_city_plan, add_attraction "
+                       "or remove_attraction."])
+
+    if action in ("change_hotel", "change_flight"):
+        _drop_missed_visits(request, sel, cat)
 
     # the whole package is checked again; "1-2 attractions per full day" applies to the first package only
-    problems = validator.validate(package.assemble(None, request, sel, cat), cat, first_package=False)
+    problems = validator.validate(package.assemble(request, sel, cat), cat, first_package=False)
     if problems:
         raise Refused([p.split(": ", 1)[1] for p in problems])
     return sel
@@ -182,6 +238,8 @@ def flight_options(request, selection, direction, cat):
 def attraction_options(request, selection, day, cat):
     """Attractions that can still be added on that day, each at the first start time the rules allow."""
     A, C = _travelers(request)
+    if not request["start_date"] <= day <= request["end_date"]:
+        return []  # outside the trip no start time can pass; skip the slow search
     used = {v["attraction_id"] for v in selection["attractions"]}
     out = []
     for a in cat.list_attractions():
@@ -202,3 +260,23 @@ def attraction_options(request, selection, day, cat):
                         "price_inr": pricing.attraction_price(a, A, C), "image": "/" + a["image"]})
             break
     return sorted(out, key=lambda o: (o["start"], o["attraction_id"]))
+
+
+def city_plan_options(request, selection, current_total, cat, limit=30):
+    """Every other way to split the trip over cities, each built the cheapest way, with the price difference (G3, G2)."""
+    here = [(_stay_city(cat, s), len(_nights(s))) for s in selection["stays"]]
+    out = []
+    # ponytail: builds every plan on each call (a few dozen); cache per request if long trips feel slow
+    for plan in builder.city_plans(request["country"], request["nights"], cat):
+        try:
+            _, sel = builder.build_plan(request, plan, cat)
+        except builder.Blocked:
+            continue
+        is_current = plan == here
+        total = current_total if is_current else package.assemble(request, sel, cat)["total_inr"]
+        out.append({"plan": [{"city": c, "nights": n} for c, n in plan], "total_inr": total,
+                    "price_diff_inr": total - current_total, "fits_budget": total <= request["budget_inr"],
+                    "is_current": is_current})
+    out.sort(key=lambda o: (o["total_inr"], [s["city"] for s in o["plan"]]))
+    top = out[:limit]
+    return top if any(o["is_current"] for o in top) else top + [o for o in out[limit:] if o["is_current"]]

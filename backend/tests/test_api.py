@@ -14,7 +14,8 @@ from tests.check_trip import check, load_catalog
 
 CAT = load_catalog()
 
-REQUIRED_TRIP = {"trip_id", "traveler", "start_date", "end_date", "country", "budget_inr", "total_inr", "items"}
+REQUIRED_TRIP = {"request", "selection", "traveler", "start_date", "end_date", "country", "budget_inr", "total_inr",
+                 "items"}
 REQUIRED_ITEM = {"item_id", "type", "name", "city", "status", "catalog_id", "start", "end",
                  "room_id", "quantity", "price_inr", "booking", "sources"}
 DETAILS = {
@@ -50,6 +51,11 @@ def of_type(pkg, type_):
 
 def key():
     return {"Idempotency-Key": uuid.uuid4().hex}
+
+
+def package_body(pkg):
+    """What every call after search sends back: the package's request and selection (there is no package id)."""
+    return {"request": pkg["request"], "selection": pkg["selection"]}
 
 
 def assert_not_found(r):
@@ -135,9 +141,7 @@ def test_children_are_optional(client):
 
 def test_same_request_gives_same_package(client):
     first, second = search(client), search(client)
-    assert first["trip_id"] != second["trip_id"]
-    strip = lambda p: [{k: v for k, v in i.items()} for i in p["items"]]
-    assert strip(first) == strip(second) and first["total_inr"] == second["total_inr"]
+    assert first["items"] == second["items"] and first["total_inr"] == second["total_inr"]
 
 
 def test_search_is_fast_enough_for_the_demo(client):
@@ -165,8 +169,8 @@ INVALID = {
     "child_age_18": ("child_ages", dict(MENON, child_ages=[18])),
     "child_age_negative": ("child_ages", dict(MENON, child_ages=[-1])),
     "unknown_country": ("country", dict(MENON, country="France")),
-    "unknown_departure": ("departure_city", dict(MENON, departure_city="XYZ")),
-    "destination_airport_as_departure": ("departure_city", dict(MENON, departure_city="NRT")),
+    # a departure city we do not fly from is not a form error: see test_unknown_departure.py
+    "departure_not_text": ("departure_city", dict(MENON, departure_city=123)),
     "impossible_date": ("start_date", dict(MENON, start_date="2027-02-30")),
     "bad_date_text": ("start_date", dict(MENON, start_date="10/04/2027")),
     "before_1_april": ("start_date", dict(MENON, start_date="2027-03-29")),
@@ -297,21 +301,7 @@ def test_cheapest_total_is_really_buildable(client):
     assert r.status_code == 422 and r.json()["code"] == "OVER_BUDGET"
 
 
-# ---------- 1. saved package ----------
-
-def test_package_is_saved(client):
-    pkg = search(client)
-    r = client.get(f"/api/packages/{pkg['trip_id']}")
-    assert r.status_code == 200 and r.json() == pkg
-
-
-def test_package_survives_backend_restart(client):
-    pkg = search(client)
-    from app.main import create_app
-
-    with TestClient(create_app()) as fresh:
-        assert fresh.get(f"/api/packages/{pkg['trip_id']}").json() == pkg
-
+# ---------- 1. a package is not saved (see test_stateless_booking.py) ----------
 
 def test_unknown_package_not_found(client):
     assert_not_found(client.get("/api/packages/does-not-exist"))
@@ -374,24 +364,7 @@ def test_day_city_is_that_nights_hotel(client):
             assert day["city"] == night_city[day["date"]]
 
 
-# ---------- 3. parts of a package ----------
-
-@pytest.mark.parametrize("part,type_", [("flights", "flight"), ("hotels", "hotel"),
-                                        ("transfers", "transfer"), ("attractions", "attraction")])
-def test_package_parts(client, part, type_):
-    pkg = search(client)
-    r = client.get(f"/api/packages/{pkg['trip_id']}/{part}")
-    assert r.status_code == 200
-    body = r.json()
-    assert body["trip_id"] == pkg["trip_id"]
-    assert body["items"] == of_type(pkg, type_)
-
-
-def test_package_days_part(client):
-    pkg = search(client)
-    r = client.get(f"/api/packages/{pkg['trip_id']}/days")
-    assert r.status_code == 200 and r.json() == {"trip_id": pkg["trip_id"], "days": pkg["days"]}
-
+# ---------- 3. parts of a package: no endpoints, the Package holds them ----------
 
 @pytest.mark.parametrize("part", ["flights", "hotels", "transfers", "attractions", "days"])
 def test_parts_of_unknown_package_not_found(client, part):
@@ -483,15 +456,17 @@ def test_credits(client):
 
 # ---------- 2. book and reservation (M7) ----------
 
+def book(client, pkg):
+    r = client.post("/api/bookings", json=package_body(pkg), headers=key())
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
 def test_book_gives_10_digit_reference_and_booked_package(client):
     pkg = search(client)
-    r = client.post(f"/api/packages/{pkg['trip_id']}/book", headers=key())
-    assert r.status_code == 200
-    body = r.json()
-    ref = body["reference"]
+    body = book(client, pkg)
+    ref, booked = body["reference"], body["package"]
     assert re.fullmatch(r"[1-9]\d{9}", ref)
-    booked = body["package"]
-    assert booked["trip_id"] == pkg["trip_id"]
     assert booked["status"] == "BOOKED" and booked["reference"] == ref
     assert all(i["status"] == "BOOKED" and i["booking"] == {"reference": ref} for i in booked["items"])
     assert booked["total_inr"] == pkg["total_inr"]
@@ -499,53 +474,41 @@ def test_book_gives_10_digit_reference_and_booked_package(client):
 
 
 def test_reservation_opens_the_booked_package(client):
-    pkg = search(client)
-    booked = client.post(f"/api/packages/{pkg['trip_id']}/book", headers=key()).json()
+    booked = book(client, search(client))
     r = client.get(f"/api/reservations/{booked['reference']}")
     assert r.status_code == 200 and r.json() == booked["package"]
-    assert client.get(f"/api/packages/{pkg['trip_id']}").json() == booked["package"]
 
 
-def test_my_bookings_lists_only_booked_packages_newest_first(client):
+def test_my_bookings_lists_booked_packages_newest_first(client):
     before = client.get("/api/reservations").json()["reservations"]
-    planned = search(client)
-    first, second = search(client), search(client)
-    for p in (first, second):
-        client.post(f"/api/packages/{p['trip_id']}/book", headers=key())
+    first, second = book(client, search(client)), book(client, search(client))
     got = client.get("/api/reservations")
     assert got.status_code == 200
     refs = [r["reference"] for r in got.json()["reservations"]]
     assert len(refs) == len(before) + 2
-    ids = [r["trip_id"] for r in got.json()["reservations"]]
-    assert planned["trip_id"] not in ids
-    assert ids[:2] == [second["trip_id"], first["trip_id"]]
+    assert refs[:2] == [second["reference"], first["reference"]]
     assert all(r["status"] == "BOOKED" for r in got.json()["reservations"])
 
 
-def test_booking_twice_keeps_the_reference(client):
+def test_booking_twice_with_one_key_keeps_the_reference(client):
     pkg = search(client)
-    first = client.post(f"/api/packages/{pkg['trip_id']}/book", headers=key()).json()["reference"]
-    second = client.post(f"/api/packages/{pkg['trip_id']}/book", headers=key()).json()["reference"]
+    k = key()
+    first = client.post("/api/bookings", json=package_body(pkg), headers=k).json()["reference"]
+    second = client.post("/api/bookings", json=package_body(pkg), headers=k).json()["reference"]
     assert first == second
 
 
 def test_references_are_unique(client):
-    refs = {client.post(f"/api/packages/{search(client)['trip_id']}/book", headers=key()).json()["reference"] for _ in range(3)}
-    assert len(refs) == 3
+    assert len({book(client, search(client))["reference"] for _ in range(3)}) == 3
 
 
 def test_reservation_survives_backend_restart(client):
-    pkg = search(client)
-    booked = client.post(f"/api/packages/{pkg['trip_id']}/book", headers=key()).json()
+    booked = book(client, search(client))
     from app.main import create_app
 
     with TestClient(create_app()) as fresh:
         r = fresh.get(f"/api/reservations/{booked['reference']}")
         assert r.status_code == 200 and r.json() == booked["package"]
-
-
-def test_book_unknown_package_not_found(client):
-    assert_not_found(client.post("/api/packages/does-not-exist/book", headers=key()))
 
 
 @pytest.mark.parametrize("ref", ["0000000000", "9999999999", "123", "abcdefghij"])

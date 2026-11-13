@@ -14,7 +14,25 @@ from app.core.timeutil import fmt
 from app.services import pricing
 
 
-def assemble(trip_id, request, selection, cat, reference=None):
+def travel_minutes(items):
+    """Flight durations plus the transfers between cities (G4 "fastest"). Airport transfers do not count."""
+    return sum(i["details"]["duration_minutes"] for i in items
+               if i["type"] == "flight" or i["details"].get("kind") == "INTERCITY")
+
+
+def avg_stars(items):
+    """Hotel stars averaged per night (G4 "best rated"). The guest rating does not count."""
+    hotels = [i["details"] for i in items if i["type"] == "hotel"]
+    return sum(h["stars"] * h["nights"] for h in hotels) / sum(h["nights"] for h in hotels)
+
+
+def _reach_times(selection, cat):
+    """Local time the traveler gets to each stay: after the airport transfer, or after the transfer from the last city."""
+    legs = [selection["arrival"]] + selection["intercity"]
+    return [leg["pickup"] + timedelta(minutes=cat.get_transfer(leg["transfer_id"])["duration_minutes"]) for leg in legs]
+
+
+def assemble(request, selection, cat, reference=None):
     A, C = request["adults"], len(request["child_ages"])
     N = A + C
     home = request["departure_city"]
@@ -53,15 +71,20 @@ def assemble(trip_id, request, selection, cat, reference=None):
             {"kind": kind, "transfer_type": t["type"], "from_point": t["from_point"], "to_point": t["to_point"],
              "duration_minutes": t["duration_minutes"], "pricing": t["pricing"]})
 
+    reach = _reach_times(selection, cat)
     for n, (s, h) in enumerate(zip(stays, hotels), 1):
         room = cat.get_room(s["room_id"])
         nights = (s["check_out"] - s["check_in"]).days
+        # G1: check-in times are display-only for the judges, so an early arrival is a warning, not a refusal
+        early = reach[n - 1].date() == s["check_in"] and f"{reach[n - 1]:%H:%M}" < h["check_in_from"]
+        warnings = [f"You reach {h['name']} at {reach[n - 1]:%H:%M}, before check-in from {h['check_in_from']}. "
+                    "Ask for early check-in or luggage storage."] if early else []
         add(f"hotel-{n}", "hotel", h["name"], h["city"], h["hotel_id"], s["check_in"].isoformat(), s["check_out"].isoformat(),
             s["rooms"], pricing.hotel_price(room, s["rooms"], nights),
             {"area": h["area"], "stars": h["stars"], "rating": h["rating"], "room_type": room["room_type"],
              "room_name": room["name"], "rooms": s["rooms"], "nights": nights, "price_per_night_inr": room["price_inr"],
              "check_in_from": h["check_in_from"], "check_out_until": h["check_out_until"], "image": "/" + h["image"]},
-            room_id=room["room_id"])
+            room_id=room["room_id"], warnings=warnings)
 
     for visit in selection["attractions"]:
         a = cat.get_attraction(visit["attraction_id"])
@@ -73,7 +96,7 @@ def assemble(trip_id, request, selection, cat, reference=None):
     items.sort(key=lambda i: (i["start"], i["item_id"]))
     total = sum(i["price_inr"] for i in items)
     trip = {
-        "trip_id": trip_id, "status": status, "reference": reference,
+        "status": status, "reference": reference,
         "traveler": {"name": None, "home_airport": home, "adults": A, "children": C,
                      "child_ages": list(request["child_ages"])},
         "country": request["country"],
@@ -83,6 +106,7 @@ def assemble(trip_id, request, selection, cat, reference=None):
                     "check_in": s["check_in"].isoformat(), "check_out": s["check_out"].isoformat()}
                    for s, h in zip(stays, hotels)],
         "budget_inr": request["budget_inr"], "total_inr": total, "remaining_inr": request["budget_inr"] - total,
+        "travel_minutes": travel_minutes(items), "avg_stars": round(avg_stars(items), 2),
         "items": items,
     }
     trip["days"] = _days(trip, selection, cat, tz)

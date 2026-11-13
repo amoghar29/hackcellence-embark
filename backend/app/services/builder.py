@@ -15,7 +15,7 @@ from app.core.timeutil import DAYS, at, first_pickup, last_pickup, parse_hhmm
 from app.services import package, pricing, validator
 
 log = logging.getLogger(__name__)
-STAGES = ["NO_CITY_PLAN", "NO_ARRIVAL_FLIGHT", "ARRIVAL_SEATS", "NO_RETURN_FLIGHT", "RETURN_SEATS", "NO_ROOM_FITS",
+STAGES = ["NO_DEPARTURE_FLIGHTS", "NO_CITY_PLAN", "NO_ARRIVAL_FLIGHT", "ARRIVAL_SEATS", "NO_RETURN_FLIGHT", "RETURN_SEATS", "NO_ROOM_FITS",
           "HOTEL_SOLD_OUT", "NO_AIRPORT_TRANSFER", "ARRIVAL_TOO_LATE", "RETURN_TOO_EARLY", "NO_INTERCITY",
           "NOT_ENOUGH_ATTRACTIONS", "RULE_CHECK"]  # in build order: a later code means the plan got further
 PARTS = {"FLIGHT": "flight", "SEATS": "flight", "ROOM": "hotel", "HOTEL": "hotel", "TRANSFER": "transfer",
@@ -121,8 +121,9 @@ def _rooms(cat, city, check_in, check_out, A, C):
     return free
 
 
-def airport_leg(cat, flights, hotel, A, C, arriving):
-    """Cheapest (cost, flight, transfer, pickup) for this hotel, or a string saying why there is none.
+def airport_leg(cat, flights, hotel, A, C, arriving, objective="cheapest"):
+    """Best (cost, flight, transfer, pickup) for this hotel, or a string saying why there is none.
+    Best is the cheapest, or the shortest flight when the objective is "fastest" (cost breaks ties).
 
     Arrival: pickup at least 60 minutes after landing. Return: at the airport at least 180 minutes
     before departure, leaving the hotel on the last day. Both ends are local time of the destination.
@@ -142,16 +143,20 @@ def airport_leg(cat, flights, hotel, A, C, arriving):
                     pickup = None
             if pickup:
                 cost = pricing.flight_price(f, A + C) + pricing.transfer_price(t, A, C)
-                key = (cost, f["flight_id"], t["transfer_id"])
+                key = (f["duration_minutes"] if objective == "fastest" else 0, cost, f["flight_id"], t["transfer_id"])
                 if best is None or key < best[0]:
-                    best = (key, f, t, pickup)
+                    best = (key, cost, f, t, pickup)
     if best:
-        return best[0][0], best[1], best[2], best[3]
+        return best[1:]
     return "hours" if seen_transfer else "none"
 
 
-def _plan(request, plan, cat):
-    """The cheapest selection for one city plan: (cost, selection). Raises Blocked with the reason."""
+def build_plan(request, plan, cat, objective="cheapest"):
+    """The best selection for one city plan: (cost, selection). Raises Blocked with the reason.
+
+    objective picks which part wins when several fit: "cheapest" (lowest price), "fastest" (shortest flights
+    and city-to-city transfers) or "best_rated" (most hotel stars). Price breaks ties; every rule still applies.
+    """
     A, C = request["adults"], len(request["child_ages"])
     N, home, start, end = A + C, request["departure_city"], request["start_date"], request["end_date"]
     first_city, last_city = plan[0][0], plan[-1][0]
@@ -174,7 +179,7 @@ def _plan(request, plan, cat):
             total, chosen = price, {}
             for arriving, flights, here in ((True, arrivals, i == 0), (False, returns, i == len(spans) - 1)):
                 if here:
-                    leg = airport_leg(cat, flights, hotel, A, C, arriving)
+                    leg = airport_leg(cat, flights, hotel, A, C, arriving, objective)
                     if isinstance(leg, str):
                         why.setdefault(arriving, set()).add(leg)
                         total = None
@@ -182,8 +187,14 @@ def _plan(request, plan, cat):
                     why.setdefault(arriving, set()).add("ok")
                     chosen[arriving] = leg
                     total += leg[0]
-            if total is not None and (best is None or (total, room["room_id"]) < best[0]):
-                best = ((total, room["room_id"]), room, k, chosen)
+            if total is not None:
+                # ponytail: best_rated takes the top-star hotel per city even if a cheaper mix would fit the budget;
+                # such a plan is dropped for that pick. Search under the budget if that ever hides a good package.
+                rank = (-hotel["stars"] if objective == "best_rated" else 0,
+                        sum(x[1]["duration_minutes"] for x in chosen.values()) if objective == "fastest" else 0,
+                        total, room["room_id"])
+                if best is None or rank < best[0]:
+                    best = (rank, room, k, chosen)
         if best is None:
             arriving = "ok" not in why.get(True, {"ok"})  # which side never worked for any hotel
             flights = arrivals if arriving else returns
@@ -199,7 +210,7 @@ def _plan(request, plan, cat):
             earliest = min(f["departure_local"] for f in flights)
             raise Blocked("RETURN_TOO_EARLY", f"Flights from {city} to {home} on {end} leave from {earliest:%H:%M}; "
                            "no transfer on that day reaches the airport 180 minutes before departure.")
-        (total, _), room, k, chosen = best
+        (*_, total, _), room, k, chosen = best
         cost += total
         legs.update(chosen)
         stays.append({"hotel_id": room["hotel_id"], "room_id": room["room_id"], "rooms": k,
@@ -216,12 +227,12 @@ def _plan(request, plan, cat):
             earliest = at(change_day, INTERCITY_FROM)
             pickup = first_pickup(t, earliest, 24 * 60 - 1 - parse_hhmm(INTERCITY_FROM))
             if pickup and pickup.date() == change_day:
-                key = (pricing.transfer_price(t, A, C), tid)
+                key = (t["duration_minutes"] if objective == "fastest" else 0, pricing.transfer_price(t, A, C), tid)
                 if best is None or key < best[0]:
                     best = (key, t, pickup)
         if not best:
             raise Blocked("NO_INTERCITY", f"No transfer from {a} to {b} runs on {change_day}.")
-        cost += best[0][0]
+        cost += best[0][1]
         intercity.append({"transfer_id": best[1]["transfer_id"], "pickup": best[2]})
 
     # full days only: not the arrival day, not a city-change day, not the last day
@@ -268,9 +279,15 @@ def _open_attractions(cat, city, day):
 
 # ---------- the whole request ----------
 
+def _departure_airports(cat):
+    return [d["airport"] for d in cat.destinations["departure_cities"]]
+
+
 def _country_flights(request, cat):
     """Blocker when no flight at all works for the country, so the reason is one clear sentence."""
     home, country, n = request["departure_city"], request["country"], request["adults"] + len(request["child_ages"])
+    if home not in _departure_airports(cat):
+        return Blocked("NO_DEPARTURE_FLIGHTS", f"No flights exist from {home}.").blocker
     cities = [c["name"] for c in cat.country(country)["cities"]]
     for arriving, day in ((True, request["start_date"]), (False, request["end_date"])):
         found = cat.flights(home, cities, day, arriving)
@@ -289,20 +306,31 @@ def _country_flights(request, cat):
     return None
 
 
-def _valid(request, cat, limit=1):
+def _ranked(built, request, cat, objective):
+    """(trip, selection) for every built plan, best first for the objective; ties keep the plan order."""
+    if objective == "cheapest":  # cheap path: only assemble what the caller reads
+        for _, selection in sorted(built, key=lambda x: x[0]):
+            yield package.assemble(request, selection, cat), selection
+        return
+    trips = [(package.assemble(request, selection, cat), selection) for _, selection in built]
+    measure = {"fastest": lambda t: (package.travel_minutes(t["items"]), t["total_inr"]),
+               "best_rated": lambda t: (-package.avg_stars(t["items"]), t["total_inr"])}[objective]
+    yield from sorted(trips, key=lambda x: measure(x[0]))
+
+
+def _valid(request, cat, limit=1, objective="cheapest"):
     """([(trip, selection)], None): up to `limit` packages that pass every rule, ignoring the budget,
-    cheapest first; else ([], blockers)."""
+    best first for the objective (cheapest by default); else ([], blockers)."""
     blocker = _country_flights(request, cat)
     if blocker:
         return [], [blocker]
     built, blocked, valid = [], [], []
     for plan in city_plans(request["country"], request["nights"], cat):
         try:
-            built.append(_plan(request, plan, cat))
+            built.append(build_plan(request, plan, cat, objective))
         except Blocked as e:
             blocked.append(e.blocker)
-    for _, selection in sorted(built, key=lambda x: x[0]):  # stable: ties keep the plan order
-        trip = package.assemble(None, request, selection, cat)
+    for trip, selection in _ranked(built, request, cat, objective):
         problems = validator.validate(trip, cat)  # the gate: nothing leaves without passing every rule
         if not problems:
             valid.append((trip, selection))
@@ -336,12 +364,12 @@ def _nearby(request, cat):
     """Requests close to this one, as (change in request-form terms, normalized request)."""
     rules = cat.destinations["rules"]
     first, last = rules["data_window"]["first_night"], rules["data_window"]["last_departure"]
-    for shift in (1, -1, 2, -2, 3, -3):
+    for shift in (1, -1, 2, -2, 3, -3) if request["departure_city"] in _departure_airports(cat) else ():
         start = request["start_date"] + timedelta(shift)
         end = start + timedelta(request["nights"])
         if start.isoformat() >= first and end.isoformat() <= last:
             yield {"start_date": start.isoformat()}, dict(request, start_date=start, end_date=end)
-    for nights in (request["nights"] - 1, request["nights"] + 1):
+    for nights in (request["nights"] - 1, request["nights"] + 1) if request["departure_city"] in _departure_airports(cat) else ():
         end = request["start_date"] + timedelta(nights)
         if rules["min_nights"] <= nights <= rules["max_nights"] and end.isoformat() <= last:
             yield {"nights": nights}, dict(request, nights=nights, end_date=end)
@@ -381,6 +409,18 @@ def build_many(request, cat, limit=30):
     _fail(request, cat, valid[0] if valid else None, blockers)
 
 
+def build_picks(request, cat):
+    """{"cheapest" | "fastest" | "best_rated": (trip, selection)}: the best package for each measure that fits
+    the budget (G4). A measure with no package inside the budget is left out; a tie keeps the first."""
+    picks = {}
+    for objective in ("cheapest", "fastest", "best_rated"):
+        valid, _ = _valid(request, cat, limit=10_000, objective=objective)
+        fit = next((f for f in valid if f[0]["total_inr"] <= request["budget_inr"]), None)
+        if fit:
+            picks[objective] = fit
+    return picks
+
+
 def _fail(request, cat, found, blockers):
     """Always raises: OverBudget when `found` (the cheapest package) exceeds the budget, else NoPackage."""
     budget = request["budget_inr"]
@@ -411,6 +451,9 @@ def _fail(request, cat, found, blockers):
         suggestion = {
             "ARRIVAL_SEATS": "No flight on nearby dates has enough free seats. Travel in a smaller group.",
             "RETURN_SEATS": "No flight on nearby dates has enough free seats. Travel in a smaller group.",
+            "NO_DEPARTURE_FLIGHTS": "Flights leave from "
+            + ", ".join(f"{d['city']} ({d['airport']})" for d in cat.destinations["departure_cities"])
+            + ". Choose one of them as the departure city.",
             "NO_ROOM_FITS": "Add an adult or travel with fewer children: each room needs an adult.",
         }.get(blockers[0]["code"], "Nearby dates and other departure cities do not work either. "
                                     "Try a different week or the other country.")

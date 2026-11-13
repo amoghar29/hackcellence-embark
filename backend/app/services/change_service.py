@@ -1,44 +1,46 @@
-"""Changing a saved package (Phase 2): alternatives with price differences, and one change at a time."""
-import logging
+"""Changing a package (Phase 2): alternatives with price differences, and one change at a time.
+
+Nothing is saved. Every call gets the package's request and selection (see PackageService.rebuild) and returns
+the answer; the client keeps the new package.
+"""
 from datetime import date
+from typing import Any
 
 from app.repositories.catalog_repo import CatalogRepository
-from app.repositories.package_repo import PackageRepository
 from app.services import changes, package
-from app.services.errors import AlreadyBooked
-from app.services.package_service import PackageService
+from app.services.package_service import PackageService, present
 from app.services.request_form import InvalidRequest
-
-log = logging.getLogger(__name__)
 
 
 class ChangeService:
-    def __init__(self, cat: CatalogRepository, packages: PackageService, repo: PackageRepository):
+    def __init__(self, cat: CatalogRepository, packages: PackageService):
         self._cat = cat
         self._packages = packages
-        self._repo = repo
 
-    def apply(self, trip_id: str, change: dict) -> dict:
-        """Raises NotFound, AlreadyBooked or changes.Refused; a refused change leaves the package as it was."""
-        saved = self._packages.open(trip_id)
-        if saved.trip["status"] == "BOOKED":
-            raise AlreadyBooked()
-        selection = changes.apply(saved.request, saved.selection, change, self._cat)
-        self._repo.update(trip_id, selection, package.assemble(trip_id, saved.request, selection, self._cat))
-        log.info("Package %s changed: %s", trip_id, change["action"])
-        return self._packages.get(trip_id)
+    def apply(self, raw: Any, change: dict) -> dict:
+        """Raises InvalidRequest or changes.Refused; a refused change leaves the package as it was."""
+        request, selection = self._packages.rebuild(raw)
+        new = changes.apply(request, selection, change, self._cat)
+        # G1: what was fixed or must be known (a visit removed, experiences re-picked); early check-ins sit on the items
+        return {**present(package.assemble(request, new, self._cat), request, new),
+                "notices": changes.notices(request, selection, new, change, self._cat)}
 
-    def hotel_options(self, trip_id: str, city: str) -> list[dict]:
-        saved = self._packages.open(trip_id)
-        found = changes.hotel_options(saved.request, saved.selection, city, self._cat)
+    def city_plan_options(self, raw: Any) -> list[dict]:
+        request, selection = self._packages.rebuild(raw)
+        total = package.assemble(request, selection, self._cat)["total_inr"]
+        return changes.city_plan_options(request, selection, total, self._cat)
+
+    def hotel_options(self, raw: Any, city: str) -> list[dict]:
+        request, selection = self._packages.rebuild(raw)
+        found = changes.hotel_options(request, selection, city, self._cat)
         if found is None:
             raise InvalidRequest("city", f"{city} is not a city of this package.")
         return found
 
-    def flight_options(self, trip_id: str, direction: str) -> list[dict]:
-        saved = self._packages.open(trip_id)
-        return changes.flight_options(saved.request, saved.selection, direction, self._cat)
+    def flight_options(self, raw: Any, direction: str) -> list[dict]:
+        request, selection = self._packages.rebuild(raw)
+        return changes.flight_options(request, selection, direction, self._cat)
 
-    def attraction_options(self, trip_id: str, day: date) -> list[dict]:
-        saved = self._packages.open(trip_id)
-        return changes.attraction_options(saved.request, saved.selection, day, self._cat)
+    def attraction_options(self, raw: Any, day: date) -> list[dict]:
+        request, selection = self._packages.rebuild(raw)
+        return changes.attraction_options(request, selection, day, self._cat)

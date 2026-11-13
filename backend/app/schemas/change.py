@@ -27,4 +27,15 @@ class RemoveAttraction(BaseModel):
     item_id: str
 
 
-Change = Annotated[ChangeHotel | ChangeFlight | AddAttraction | RemoveAttraction, Field(discriminator="action")]
+class PlanStop(BaseModel):
+    city: str
+    nights: int
+
+
+class ChangeCityPlan(BaseModel):
+    action: Literal["change_city_plan"]
+    plan: list[PlanStop] = Field(description="The cities in order, with the nights in each")
+
+
+Change = Annotated[ChangeHotel | ChangeFlight | AddAttraction | RemoveAttraction | ChangeCityPlan,
+                   Field(discriminator="action")]

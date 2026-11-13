@@ -1,6 +1,8 @@
 """Maps domain errors to the one error shape of docs/API.md: {"code", "error", ...}."""
 import logging
 
+import psycopg
+
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -8,7 +10,7 @@ from starlette.exceptions import HTTPException
 
 from app.services.builder import NoPackage, OverBudget
 from app.services.changes import Refused
-from app.services.errors import AlreadyBooked, IdempotencyKeyReused, NotFound, SoldOut
+from app.services.errors import IdempotencyKeyReused, NotFound, SoldOut
 from app.services.request_form import InvalidRequest
 
 log = logging.getLogger(__name__)
@@ -57,16 +59,17 @@ def _change_refused(request: Request, e: Refused) -> JSONResponse:
     return _error(request, 422, "CHANGE_REFUSED", e.reasons[0], reasons=e.reasons, blockers=e.blockers)
 
 
-def _already_booked(request: Request, e: AlreadyBooked) -> JSONResponse:
-    return _error(request, 409, "ALREADY_BOOKED", str(e))
-
-
 def _sold_out(request: Request, e: SoldOut) -> JSONResponse:
     return _error(request, 409, "SOLD_OUT", str(e), part=e.part)
 
 
 def _key_reused(request: Request, e: IdempotencyKeyReused) -> JSONResponse:
     return _error(request, 409, "IDEMPOTENCY_KEY_REUSED", str(e))
+
+
+def _bad_value(request: Request, e: psycopg.DataError) -> JSONResponse:
+    # e.g. a NUL character in an id, which Postgres text cannot hold
+    return _error(request, 400, "INVALID_REQUEST", "A value in the request is not valid.")
 
 
 def _unexpected(request: Request, e: Exception) -> JSONResponse:
@@ -81,9 +84,9 @@ HANDLERS = {
     NoPackage: _no_package,
     OverBudget: _over_budget,
     Refused: _change_refused,
-    AlreadyBooked: _already_booked,
     SoldOut: _sold_out,
     IdempotencyKeyReused: _key_reused,
+    psycopg.DataError: _bad_value,
     Exception: _unexpected,
 }
 

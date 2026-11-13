@@ -1,14 +1,13 @@
 """Phase 2 API tests: changing a package (M6). Contract: docs/API.md, "Phase 2".
 
-These fail until Phase 2 is built. Run Phase 1 alone with:
-    pytest --ignore=tests/test_api_changes.py
+Nothing is saved: every call sends the package's request and selection and gets the new package back.
 """
 from datetime import date, datetime, timedelta
 
 import pytest
 
 from tests.check_trip import DAYS, check, load_catalog, mins
-from tests.test_api import key
+from tests.test_api import key, package_body
 
 CAT = load_catalog()
 MENON = {"departure_city": "BLR", "country": "Japan", "start_date": "2027-04-10", "nights": 6,
@@ -26,20 +25,24 @@ def items(trip, type_):
     return [i for i in trip["items"] if i["type"] == type_]
 
 
+def package_only(new):
+    return {k: v for k, v in new.items() if k != "notices"}
+
+
 def change(client, trip, body):
-    r = client.patch(f"/api/packages/{trip['trip_id']}", json=body)
+    r = client.post("/api/packages/change", json=dict(package_body(trip), change=body))
     new = r.json()
     if r.status_code == 200:
-        assert check(new, CAT, first_package=False) == []
+        assert check(package_only(new), CAT, first_package=False) == []
         assert new["total_inr"] == sum(i["price_inr"] for i in new["items"])
+        assert isinstance(new["notices"], list)
     return r.status_code, new
 
 
-def assert_refused(client, trip, status, body):
+def assert_refused(status, body):
     assert status == 422 and body["code"] == "CHANGE_REFUSED" and body["error"].strip(), body
     assert body["reasons"] and body["error"] == body["reasons"][0]
     assert isinstance(body["blockers"], list)
-    assert client.get(f"/api/packages/{trip['trip_id']}").json() == trip  # unchanged
 
 
 def stay(trip, idx=0):
@@ -78,7 +81,7 @@ def test_change_hotel_to_sold_out_room_refused(client, pkg):
                 if CAT["hotels"][r["hotel_id"]]["city"] == city and not rooms_ok(r, 1, ci, co))
     status, body = change(client, pkg, {"action": "change_hotel", "city": city, "hotel_id": room["hotel_id"],
                                         "room_id": room["room_id"]})
-    assert_refused(client, pkg, status, body)
+    assert_refused(status, body)
     assert body["blockers"][0]["code"] == "HOTEL_SOLD_OUT" and body["blockers"][0]["part"] == "hotel"
 
 
@@ -89,12 +92,12 @@ def test_change_hotel_to_room_travelers_do_not_fit_refused(client, pkg):
                 if CAT["hotels"][r["hotel_id"]]["city"] == city and r["room_type"] == "SINGLE")
     status, body = change(client, pkg, {"action": "change_hotel", "city": city, "hotel_id": room["hotel_id"],
                                         "room_id": room["room_id"]})
-    assert_refused(client, pkg, status, body)
+    assert_refused(status, body)
 
 
 def test_hotel_options_show_price_difference(client, pkg):
     h, city, _, _ = stay(pkg)
-    r = client.get(f"/api/packages/{pkg['trip_id']}/options/hotels", params={"city": city})
+    r = client.post("/api/packages/options/hotels", json=dict(package_body(pkg), city=city))
     assert r.status_code == 200
     opts = r.json()["options"]
     assert opts
@@ -129,7 +132,7 @@ def test_change_arrival_flight_to_wrong_date_refused(client, pkg):
                  and f["arrival_local"][:10] != pkg["start_date"])
     status, body = change(client, pkg, {"action": "change_flight", "item_id": out["item_id"],
                                         "flight_id": wrong["flight_id"]})
-    assert_refused(client, pkg, status, body)
+    assert_refused(status, body)
 
 
 # ---------- attractions ----------
@@ -146,7 +149,7 @@ def test_add_duplicate_attraction_refused(client, pkg):
     att = items(pkg, "attraction")[0]
     status, body = change(client, pkg, {"action": "add_attraction", "attraction_id": att["catalog_id"],
                                         "start": att["start"][:16]})
-    assert_refused(client, pkg, status, body)
+    assert_refused(status, body)
 
 
 def test_add_attraction_on_closed_date_refused(client, pkg):
@@ -160,7 +163,7 @@ def test_add_attraction_on_closed_date_refused(client, pkg):
     a, day = closed[0]
     status, body = change(client, pkg, {"action": "add_attraction", "attraction_id": a["attraction_id"],
                                         "start": f"{day}T{a['open_from']}"})
-    assert_refused(client, pkg, status, body)
+    assert_refused(status, body)
 
 
 def test_add_attraction_in_other_city_refused(client, pkg):
@@ -170,14 +173,14 @@ def test_add_attraction_in_other_city_refused(client, pkg):
     day = ci + timedelta(1)
     status, body = change(client, pkg, {"action": "add_attraction", "attraction_id": other["attraction_id"],
                                         "start": f"{day}T{other['open_from']}"})
-    assert_refused(client, pkg, status, body)
+    assert_refused(status, body)
 
 
 def test_add_attraction_on_last_day_refused(client, pkg):
     a = next(a for a in CAT["attractions"].values() if a["city"] == stay(pkg, -1)[1])
     status, body = change(client, pkg, {"action": "add_attraction", "attraction_id": a["attraction_id"],
                                         "start": f"{pkg['end_date']}T{a['open_from']}"})
-    assert_refused(client, pkg, status, body)
+    assert_refused(status, body)
 
 
 def test_add_overlapping_attraction_refused(client, pkg):
@@ -192,13 +195,14 @@ def test_add_overlapping_attraction_refused(client, pkg):
                  and mins(a["open_from"]) <= sm and sm + a["visit_minutes"] <= mins(a["open_until"]))
     status, body = change(client, pkg, {"action": "add_attraction", "attraction_id": other["attraction_id"],
                                         "start": att["start"][:16]})
-    assert_refused(client, pkg, status, body)
+    assert_refused(status, body)
 
 
-# ---------- booked packages ----------
+# ---------- a change keeps the package off the server until it is booked ----------
 
-def test_booked_package_cannot_change(client, pkg):
-    client.post(f"/api/packages/{pkg['trip_id']}/book", headers=key())
+def test_a_changed_package_books_as_it_is(client, pkg):
     att = items(pkg, "attraction")[0]
-    r = client.patch(f"/api/packages/{pkg['trip_id']}", json={"action": "remove_attraction", "item_id": att["item_id"]})
-    assert r.status_code == 409 and r.json()["code"] == "ALREADY_BOOKED"
+    status, new = change(client, pkg, {"action": "remove_attraction", "item_id": att["item_id"]})
+    assert status == 200
+    r = client.post("/api/bookings", json=package_body(new), headers=key())
+    assert r.status_code == 200 and r.json()["package"]["total_inr"] == new["total_inr"]

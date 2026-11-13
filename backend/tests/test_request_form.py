@@ -180,7 +180,7 @@ def test_blank_required_field(cat, field, blank):
 
 
 INVALID = {
-    "departure_city": ["XYZ", "NRT", "Tokyo", "Paris", 123],
+    "departure_city": [123, ["BLR"], "x" * 100],  # other text is accepted: see test_unknown_departure.py
     "country": ["France", "Tokyo", "UAE ", 1],
     "start_date": ["2027-02-30", "10/04/2027", "2027-4-10x", "tomorrow", 20270410],
     "nights": [0, 2, 11, -1, 6.5, "six", "6.5", True, [6]],

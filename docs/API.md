@@ -9,24 +9,21 @@ Backend: FastAPI at `http://localhost:8000`. All bodies are JSON. All prices are
 | Group | Method and path | Purpose | Phase |
 |---|---|---|---|
 | Form | `GET /api/options` | Dropdown values and limits for the request form | 1 |
-| **1. Search** | `POST /api/packages/search` | Build a package from the request and save it | 1 |
+| **1. Search** | `POST /api/packages/search` | Build a package from the request. Nothing is saved | 1 |
 | | `POST /api/packages/results` | Like search, but returns every package that fits (up to 30), cheapest first | 1 |
-| | `GET /api/packages/{trip_id}` | Reopen a saved package (page refresh) | 1 |
-| **2. Book** | `POST /api/packages/{trip_id}/book` | Confirm; returns the 10-digit reservation number | 1 |
+| **2. Book** | `POST /api/bookings` | Send the package back; every part is booked in one transaction; returns the 10-digit reservation number | 1 |
 | | `GET /api/reservations/{reference}` | Open a reservation by its number | 1 |
-| **3. Parts** | `GET /api/packages/{trip_id}/flights` | The package's flights | 1 |
-| | `GET /api/packages/{trip_id}/hotels` | The package's hotels | 1 |
-| | `GET /api/packages/{trip_id}/transfers` | The package's transfers | 1 |
-| | `GET /api/packages/{trip_id}/attractions` | The package's attractions | 1 |
-| | `GET /api/packages/{trip_id}/days` | Day-by-day plan | 1 |
+| | `GET /api/reservations` | All reservations, newest first | 1 |
 | **3. Details** | `GET /api/hotels/{hotel_id}` | Full hotel record and all its room types | 1 |
 | | `GET /api/flights/{flight_id}` | Full flight record | 1 |
 | | `GET /api/transfers/{transfer_id}` | Full transfer record | 1 |
 | | `GET /api/attractions/{attraction_id}` | Full attraction record | 1 |
 | Media | `GET /api/credits` | Photo credits (show them whenever photos are shown) | 1 |
 | | `GET /images/...` | Hotel and attraction photos | 1 |
-| Change | `GET /api/packages/{trip_id}/options/{hotels,flights,attractions}` | Alternatives, with price difference | 2 |
-| | `PATCH /api/packages/{trip_id}` | Apply one change, or refuse with the reason | 2 |
+| Change | `POST /api/packages/options/{hotels,flights,attractions,city-plans}` | Alternatives, with price difference | 2 |
+| | `POST /api/packages/change` | Apply one change, or refuse with the reason | 2 |
+
+There is no package ID. A package lives in the client until it is booked: search returns it with its `request` and `selection`, and every later call sends those two back.
 
 How the parts and details fit: a package item has a short `details` summary for its card and a `catalog_id`. When the traveler opens the card, call the detail endpoint with that id, for example `GET /api/hotels/HTL-TYO-004` for the hotel item with `catalog_id: "HTL-TYO-004"`.
 
@@ -45,7 +42,6 @@ Every error has the same shape, so the UI can show `error` and highlight `field`
 | 422 | `NO_PACKAGE` | The request is valid but no package can be built | `reasons`, `blockers`, `suggestion`, `alternatives` |
 | 422 | `OVER_BUDGET` | Packages exist but none fits the budget | `budget_inr`, `cheapest_total_inr`, `over_by_inr`, `suggestion`, `alternatives` |
 | 422 | `CHANGE_REFUSED` | Phase 2: the change would break a travel rule | `reasons`, `blockers` |
-| 409 | `ALREADY_BOOKED` | Phase 2: changing a booked package | |
 | 409 | `SOLD_OUT` | Booking: a flight or room was taken since the search | `part`: `flight` or `hotel` |
 | 409 | `IDEMPOTENCY_KEY_REUSED` | Booking: the `Idempotency-Key` already booked another package | |
 
@@ -146,7 +142,7 @@ Request (the 7 form fields):
 
 Responses:
 
-- **201**: a [Package](#the-package-object), saved with `status: "PLANNED"`. The app chooses the cities and builds the cheapest package that passes every travel rule. The first package has one attraction on each full day, and none on the arrival day, on city-change days and on the last day.
+- **201**: a [Package](#the-package-object), with `status: "PLANNED"` (nothing is saved). The app chooses the cities and builds the cheapest package that passes every travel rule. The first package has one attraction on each full day, and none on the arrival day, on city-change days and on the last day.
 - **400** `INVALID_REQUEST`: the message says how to fix the value, for example `{"code": "INVALID_REQUEST", "error": "The trip must end by 2027-04-20. Start on or before 2027-04-15, or choose fewer nights.", "field": "start_date"}`.
 - **422** `NO_PACKAGE` (see [Reasons and recommendations](#reasons-and-recommendations-422)):
   ```json
@@ -175,32 +171,33 @@ Responses:
 
 ### `POST /api/packages/results`
 
-Same request and same errors (400, 422 `NO_PACKAGE`, 422 `OVER_BUDGET`) as search. **201** `{ "count": 27, "packages": [ Package, ... ] }`: one package per city plan (route and split of the nights) that passes every travel rule and fits the budget, cheapest first, at most 30. Every package is saved with `status: "PLANNED"`, so each `trip_id` opens with `GET /api/packages/{trip_id}`. The UI pages the list.
-
-### `GET /api/packages/{trip_id}`
-
-**200**: the [Package](#the-package-object). **404** `NOT_FOUND`. Keep `trip_id` in the URL (for example `#/package/{trip_id}`) so a page refresh reopens it.
+Same request and same errors (400, 422 `NO_PACKAGE`, 422 `OVER_BUDGET`) as search. **201** `{ "count": 27, "packages": [ Package, ... ] }`: one package per city plan (route and split of the nights) that passes every travel rule and fits the budget, cheapest first, at most 30. Nothing is saved. `picks` is `{ "cheapest": 0, "fastest": 4, "best_rated": 2 }`: the position of each best package in `packages` (a measure with no package inside the budget is left out). The UI pages the list.
 
 ---
 
 ## 2. Book
 
-### `POST /api/packages/{trip_id}/book`
+### `POST /api/bookings`
 
-No body. Header `Idempotency-Key` (required, 1 to 255 characters): make one per click on "Book", for example a UUID, and send the same key again when retrying that click. **200**:
+Body: the package's `request` and `selection`, exactly as search returned them (the server checks every travel rule again and prices every part from the catalog, so nothing else in the body counts):
+
+```json
+{ "request": { "...": "Package.request" }, "selection": { "...": "Package.selection" } }
+```
+
+Header `Idempotency-Key` (required, 1 to 255 characters): make one per click on "Book", for example a UUID, and send the same key again when retrying that click. **200**:
 
 ```json
 { "reference": "4829105736", "package": { "...": "Package with status BOOKED" } }
 ```
 
-After booking, the package and every item have `status: "BOOKED"`, and every item has `booking: {"reference": "4829105736"}`. Booking again (same or new key) returns the same reference.
+After booking, the package and every item have `status: "BOOKED"`, and every item has `booking: {"reference": "4829105736"}`. The same key with the same package returns the same reference and books nothing more. A new key books the package again (a second reservation).
 
-Booking takes the flight seats and the hotel rooms for every night in one transaction, together with the package's transfers and attractions. If any flight or room is gone, nothing is booked and the package stays `PLANNED`.
+Booking is one transaction: it takes the flight seats and the hotel rooms for every night, then writes the booking and one row for each flight, hotel, transfer and attraction, linked to the reservation number. If any flight or room is gone, or a row cannot be written, nothing is kept.
 
 | HTTP | `code` | When |
 |---|---|---|
-| 400 | `INVALID_REQUEST` | `Idempotency-Key` missing, empty or too long (`field: "Idempotency-Key"`) |
-| 404 | `NOT_FOUND` | Unknown `trip_id` |
+| 400 | `INVALID_REQUEST` | `Idempotency-Key` missing, empty or too long (`field: "Idempotency-Key"`); body is not `{request, selection}` (`field: "request"` or `"selection"`); the selection names something the catalog does not have or breaks a travel rule (`field: "selection"`) |
 | 409 | `SOLD_OUT` | A flight or room was taken since the search. `part` is `flight` or `hotel`. Nothing was booked: search again or change that part. The same key can be retried |
 | 409 | `IDEMPOTENCY_KEY_REUSED` | The key already booked another package. Send a new key |
 
@@ -212,14 +209,7 @@ Booking takes the flight seats and the hotel rooms for every night in one transa
 
 ## 3. Parts of a package
 
-All return **200** `{ "trip_id": "...", "items": [ ... ] }` with the package's items of that type, ordered by `start`, in the same [Item](#item) shape as in the Package. **404** `NOT_FOUND` for an unknown `trip_id`.
-
-- `GET /api/packages/{trip_id}/flights`
-- `GET /api/packages/{trip_id}/hotels`
-- `GET /api/packages/{trip_id}/transfers`
-- `GET /api/packages/{trip_id}/attractions`
-
-`GET /api/packages/{trip_id}/days` returns **200** `{ "trip_id": "...", "days": [ ... ] }` (see [Day-by-day plan](#day-by-day-plan-days)).
+There are no endpoints for parts: the Package already holds them. Filter `items` by `type` (`flight`, `hotel`, `transfer`, `attraction`) and read `days` for the day-by-day plan.
 
 ## 3. Details from the catalog
 
@@ -273,7 +263,6 @@ Top-level fields are the judges' trip format plus some fields for the UI (marked
 
 | Field | Type | Meaning |
 |---|---|---|
-| `trip_id` | string | Package ID |
 | `status` | `PLANNED` \| `BOOKED` | |
 | `reference` | string \| null | 10-digit reservation number after booking |
 | `traveler` | object | `{ "name": null, "home_airport": "BLR", "adults": 2, "children": 1, "child_ages": [6] }` |
@@ -285,6 +274,8 @@ Top-level fields are the judges' trip format plus some fields for the UI (marked
 | `remaining_inr` | int | UI. `budget_inr - total_inr`; negative = over budget |
 | `items` | list | Flights, hotels, transfers, attractions (below), ordered by `start` |
 | `days` | list | UI. Day-by-day plan (below) |
+| `request` | object | From search only. The normalized request that built it; send it back to change or book |
+| `selection` | object | From search only. The choices behind the package (flights, hotels, rooms, transfers, visits, with their times as `YYYY-MM-DDTHH:MM:SS`); send it back to change or book |
 
 ### Item
 
@@ -357,28 +348,32 @@ Every item appears in at least one event. A hotel has a `CHECK_IN` event on its 
 
 Each change is checked against every travel rule. A refused change leaves the package unchanged.
 
+Every call sends the package's `request` and `selection` (see [Book](#post-apibookings)); nothing is saved, so a change returns the new package and the client keeps it.
+
 ### Change options
 
-| Call | Returns `options[]` with |
+| Call, body = `request` + `selection` + | Returns `options[]` with |
 |---|---|
-| `GET /api/packages/{trip_id}/options/hotels?city=Kyoto` | `hotel_id`, `room_id`, `name`, `area`, `stars`, `rating`, `room_type`, `rooms`, `price_inr`, `price_diff_inr`, `image` |
-| `GET /api/packages/{trip_id}/options/flights?direction=ARRIVAL` | `flight_id`, `flight_number`, `airline`, `from_airport`, `to_airport`, `departure`, `arrival`, `stops`, `price_inr`, `price_diff_inr` |
-| `GET /api/packages/{trip_id}/options/attractions?date=2027-04-12` | `attraction_id`, `name`, `category`, `start`, `end`, `price_inr`, `image` |
+| `POST /api/packages/options/hotels` `{ "city": "Kyoto" }` | `hotel_id`, `room_id`, `name`, `area`, `stars`, `rating`, `room_type`, `rooms`, `price_inr`, `price_diff_inr`, `image` |
+| `POST /api/packages/options/flights` `{ "direction": "ARRIVAL" }` | `flight_id`, `flight_number`, `airline`, `from_airport`, `to_airport`, `departure`, `arrival`, `stops`, `price_inr`, `price_diff_inr` |
+| `POST /api/packages/options/attractions` `{ "date": "2027-04-12" }` | `attraction_id`, `name`, `category`, `start`, `end`, `price_inr`, `image` |
+| `POST /api/packages/options/city-plans` | `plan`, `total_inr`, `price_diff_inr`, `fits_budget`, `is_current` |
 
 `price_diff_inr` = option price minus current price (negative = cheaper).
 
-### `PATCH /api/packages/{trip_id}`
+### `POST /api/packages/change`
 
-One change per call:
+Body: `request`, `selection` and one `change`:
 
 ```json
 { "action": "change_hotel", "city": "Kyoto", "hotel_id": "HTL-KYO-005", "room_id": "RM-KYO-005-C" }
-{ "action": "change_flight", "item_id": "i1", "flight_id": "FL-405" }
+{ "action": "change_flight", "item_id": "flight-arrival", "flight_id": "FL-405" }
 { "action": "add_attraction", "attraction_id": "ATT-TYO-009", "start": "2027-04-12T16:00" }
-{ "action": "remove_attraction", "item_id": "i7" }
+{ "action": "remove_attraction", "item_id": "attraction-ATT-TYO-007" }
+{ "action": "change_city_plan", "plan": [{ "city": "Tokyo", "nights": 3 }, { "city": "Kyoto", "nights": 3 }] }
 ```
 
-**200**: the updated Package; affected items can carry `warnings`. **409** `ALREADY_BOOKED`. **422** `CHANGE_REFUSED` with `error`, `reasons` and `blockers`; the package is unchanged:
+**200**: the updated Package (with its new `selection`) and `notices`; affected items can carry `warnings`. **422** `CHANGE_REFUSED` with `error`, `reasons` and `blockers`; the package is unchanged:
 
 ```json
 { "code": "CHANGE_REFUSED",
@@ -397,10 +392,10 @@ A change that breaks a rule with no blocker code (for example two visits that ov
 
 1. Load `GET /api/options` for the form.
 2. Submit `POST /api/packages/search`.
-   - 201: go to `#/package/{trip_id}`.
+   - 201: show the package and keep it (its `request` and `selection` are what booking needs).
    - 400: show `error` next to `field`.
    - 422 `NO_PACKAGE`: show `error`, `reasons` and `suggestion`. Offer each entry of `alternatives` as a button that searches again with that change.
    - 422 `OVER_BUDGET`: show the cheapest total, the gap and `suggestion`, with the same buttons for `alternatives`.
 3. Package page: render `days` and the item cards; show `total_inr`, `budget_inr` and `remaining_inr`. A card click calls the detail endpoint with its `catalog_id`. Add a Book button.
-4. Book: `POST .../book`, then go to `#/reservation/{reference}`.
+4. Book: `POST /api/bookings` with the package's `request` and `selection`, then go to `#/reservation/{reference}`.
 5. Reservation page: `GET /api/reservations/{reference}`. On 404 show "Reservation not found".

@@ -73,16 +73,30 @@ class AttractionOption(BaseModel):
     image: str
 
 
+class PlanStop(BaseModel):
+    city: str
+    nights: int
+
+
+class CityPlanOption(BaseModel):
+    plan: list[PlanStop]
+    total_inr: int
+    price_diff_inr: int
+    fits_budget: bool
+    is_current: bool
+
+
+class CityPlanOptions(BaseModel):
+    options: list[CityPlanOption]
+
+
 class HotelOptions(BaseModel):
-    trip_id: str
     options: list[HotelOption]
 
 
 class FlightOptions(BaseModel):
-    trip_id: str
     options: list[FlightOption]
 
 
 class AttractionOptions(BaseModel):
-    trip_id: str
     options: list[AttractionOption]

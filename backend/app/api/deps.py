@@ -36,8 +36,8 @@ def get_package_service(cat: CatalogDep, repo: PackageRepositoryDep) -> PackageS
 PackageServiceDep = Annotated[PackageService, Depends(get_package_service)]
 
 
-def get_change_service(cat: CatalogDep, packages: PackageServiceDep, repo: PackageRepositoryDep) -> ChangeService:
-    return ChangeService(cat, packages, repo)
+def get_change_service(cat: CatalogDep, packages: PackageServiceDep) -> ChangeService:
+    return ChangeService(cat, packages)
 
 
 CatalogServiceDep = Annotated[CatalogService, Depends(get_catalog_service)]

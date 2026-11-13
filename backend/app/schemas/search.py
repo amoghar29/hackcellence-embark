@@ -22,11 +22,11 @@ def _invalid(message: str) -> PydanticCustomError:
 
 def _whole(value: Any, label: str) -> int:
     """int from an int, a whole float or a digit string. bool, 6.5, 'six' and lists are refused."""
-    if isinstance(value, str) and re.fullmatch(r"\s*-?\d+\s*", value):
+    if isinstance(value, str) and len(value) < 30 and re.fullmatch(r"\s*-?\d+\s*", value):
         return int(value)
-    if isinstance(value, int) and not isinstance(value, bool):
+    if isinstance(value, int) and not isinstance(value, bool) and abs(value) < 10**12:
         return value
-    if isinstance(value, float) and math.isfinite(value) and value == int(value):
+    if isinstance(value, float) and math.isfinite(value) and abs(value) < 10**12 and value == int(value):
         return int(value)
     raise _invalid(f"{label} must be a whole number.")
 
@@ -64,13 +64,15 @@ class SearchRequest(BaseModel):
     @field_validator("departure_city", mode="before")
     @classmethod
     def _airport(cls, v: Any, info: ValidationInfo) -> str:
-        departures = _destinations(info)["departure_cities"]
-        given = v.strip().casefold() if isinstance(v, str) else None
-        for d in departures:
-            if given in (d["airport"].casefold(), d["city"].casefold()):
+        """Any city is accepted. One we fly from becomes its airport code; any other is kept as typed, and the
+        builder answers "no flights exist from ..." for it."""
+        if not isinstance(v, str) or len(" ".join(v.split())) > 60:
+            raise _invalid("Departure city must be a city name or an airport code.")
+        text = " ".join(v.split())
+        for d in _destinations(info)["departure_cities"]:
+            if text.casefold() in (d["airport"].casefold(), d["city"].casefold()):
                 return d["airport"]
-        raise _invalid("Departure city must be one of: "
-                       + ", ".join(f"{d['city']} ({d['airport']})" for d in departures) + ".")
+        return text
 
     @field_validator("country", mode="before")
     @classmethod
@@ -133,6 +135,8 @@ class SearchRequest(BaseModel):
         budget = _whole(v.replace(",", "") if isinstance(v, str) else v, "Budget")
         if budget <= 0:
             raise _invalid("Budget must be more than 0.")
+        if budget > 10**10:
+            raise _invalid("Budget must be at most 10,00,00,00,000.")
         return budget
 
     @model_validator(mode="after")
