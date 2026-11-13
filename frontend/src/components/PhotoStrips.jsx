@@ -9,7 +9,7 @@ import { imageUrl } from '../lib/format'
 function Strip({ type, photos, onOpen }) {
   const box = useRef(null)
   const looping = type === 'attraction' && photos.length > 1
-  const duration = `${photos.length * 3}s`
+  const duration = `${photos.length * 5}s`
   return <section className="mt-6" aria-label={TYPE_META[type].plural}>
     <div className="mb-2 flex items-center justify-between">
       <h2 className="font-bold">{type === 'hotel' ? 'Your stays' : 'Your experiences'} <span className="font-normal text-slate-500">({photos.length})</span></h2>

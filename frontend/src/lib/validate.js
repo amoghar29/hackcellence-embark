@@ -26,4 +26,6 @@ export function validateSearch(f, rules) {
 export const toRequest = f => ({
   departure_city: f.departure_city, country: f.country, start_date: f.start_date,
   nights: Number(f.nights), adults: Number(f.adults), child_ages: f.child_ages.map(Number), budget_inr: parseBudget(f.budget_inr),
+  ...(f.cities?.length ? { cities: f.cities } : {}),
+  ...(f.theme && f.theme !== 'mixed' ? { theme: f.theme } : {}),
 })

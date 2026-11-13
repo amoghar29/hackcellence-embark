@@ -16,7 +16,11 @@ export function saveResults(found) {
   write(EDITED, {})
 }
 
-export const loadResults = () => { const s = read(KEY, null); return Array.isArray(s) ? s : s?.packages || [] }
+// the form behind the current results, so "Edit search" opens prefilled
+export const saveForm = f => write('embark.form', f)
+export const loadForm = () => read('embark.form', null)
+
+export const loadResults =() => { const s = read(KEY, null); return Array.isArray(s) ? s : s?.packages || [] }
 export const loadPicks = () => read(KEY, null)?.picks || {}
 
 export const loadPackage = i => read(EDITED, {})[i] || loadResults()[i] || null
@@ -36,5 +40,4 @@ export const SORTS = {
   priciest: ['Price: high to low', (a, b) => b.total_inr - a.total_inr],
   fastest: ['Fastest first', (a, b) => a.travel_minutes - b.travel_minutes],
   best_rated: ['Best rated first', (a, b) => b.avg_stars - a.avg_stars],
-  nights: ['Most nights', (a, b) => b.nights - a.nights],
 }

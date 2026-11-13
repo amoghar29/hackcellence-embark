@@ -43,3 +43,14 @@ test('departure city is free text: any city passes, blank or too long does not',
   assert.ok(errs({ ...ok, departure_city: '   ' }).departure_city)
   assert.ok(errs({ ...ok, departure_city: 'x'.repeat(61) }).departure_city)
 })
+
+test('toRequest sends picked cities and a non-mixed theme', () => {
+  const body = toRequest({ ...ok, cities: ['Kyoto', 'Osaka'], theme: 'spiritual' })
+  assert.deepEqual(body.cities, ['Kyoto', 'Osaka'])
+  assert.equal(body.theme, 'spiritual')
+})
+test('toRequest leaves out no cities and the mixed theme', () => {
+  const body = toRequest({ ...ok, cities: [], theme: 'mixed' })
+  assert.equal('cities' in body, false)
+  assert.equal('theme' in body, false)
+})

@@ -26,3 +26,6 @@
 
 :focus-visible { outline: 3px solid #4f9cf9; outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+
+/* Lock page scroll while any <dialog> (Drawer/Modal) is open. */
+html:has(dialog[open]) { overflow: hidden; }

@@ -1,4 +1,5 @@
-"""Search request (M1): the 7 form fields, checked and normalized. Messages say how to fix the value.
+"""Search request (M1): the 7 form fields plus the optional cities and theme, checked and normalized.
+Messages say how to fix the value.
 
 The catalog rules (departure cities, countries, nights, data window) come in through the validation context:
 SearchRequest.model_validate(raw, context={"cat": cat}). Pydantic's own coercion is too loose here (True -> 1)
@@ -13,6 +14,11 @@ from pydantic import (BaseModel, BeforeValidator, Field, ValidationError, Valida
                       field_validator, model_validator)
 from pydantic_core import PydanticCustomError
 
+# a theme prefers attractions of these categories; "mixed" (the default) has no preference
+THEMES = {"mixed": set(),
+          "spiritual": {"TEMPLE", "SHRINE", "MOSQUE"},
+          "adventure": {"THEME_PARK", "NATURE", "BEACH", "PARK", "VIEWPOINT"},
+          "culture": {"MUSEUM", "CASTLE", "PALACE", "MONUMENT", "DISTRICT", "MARKET"}}
 REQUIRED = ("departure_city", "country", "start_date", "nights", "adults", "budget_inr")
 
 
@@ -46,6 +52,8 @@ class SearchRequest(BaseModel):
     adults: int
     child_ages: list[ChildAge] = Field(default=[], description="One age (0-17) per child")
     budget_inr: int = Field(description="Whole rupees; commas are allowed, e.g. 3,50,000")
+    cities: list[str] = Field(default=[], description="Optional: cities every package must visit")
+    theme: str = Field(default="mixed", description="Optional: " + ", ".join(THEMES))
 
     @computed_field
     @property
@@ -57,7 +65,7 @@ class SearchRequest(BaseModel):
     @classmethod
     def _blank_is_missing(cls, raw: Any) -> dict:
         if not isinstance(raw, dict):
-            raise _invalid("Send the request as a JSON object with the 7 form fields.")
+            raise _invalid("Send the request as a JSON object with the form fields.")
         return {k: v for k, v in raw.items()
                 if not (k in REQUIRED and (v is None or isinstance(v, str) and not v.strip()))}
 
@@ -138,6 +146,47 @@ class SearchRequest(BaseModel):
         if budget > 10**10:
             raise _invalid("Budget must be at most 10,00,00,00,000.")
         return budget
+
+    @field_validator("cities", mode="before")
+    @classmethod
+    def _cities_list(cls, v: Any) -> list:
+        if v is None:
+            return []
+        if not isinstance(v, list) or not all(isinstance(c, str) for c in v):
+            raise _invalid("Cities must be a list of city names.")
+        return v
+
+    @field_validator("theme", mode="before")
+    @classmethod
+    def _theme(cls, v: Any) -> str:
+        if v is None or isinstance(v, str) and not v.strip():
+            return "mixed"
+        if isinstance(v, str) and v.strip().casefold() in THEMES:
+            return v.strip().casefold()
+        raise _invalid("Theme must be one of: " + ", ".join(THEMES) + ".")
+
+    @model_validator(mode="after")
+    def _cities_of_country(self, info: ValidationInfo) -> "SearchRequest":
+        """Picked cities become the country's spelling, once each, and must fit in the nights."""
+        d = _destinations(info)
+        names = next(c for c in d["countries"] if c["name"] == self.country)["cities"]
+        by_key = {c["name"].casefold(): c["name"] for c in names}
+        picked = []
+        for text in self.cities:
+            name = by_key.get(" ".join(text.split()).casefold())
+            if name is None:
+                message = f"{text.strip()} is not a city in {self.country}. Pick from: " + ", ".join(by_key.values()) + "."
+                break
+            if name not in picked:
+                picked.append(name)
+        else:
+            least = len(picked) * d["rules"]["min_nights_per_city"]
+            if least <= self.nights:
+                self.cities = picked
+                return self
+            message = f"The {len(picked)} picked cities need at least {least} nights. Add nights or pick fewer cities."
+        raise ValidationError.from_exception_data(type(self).__name__, [
+            {"type": _invalid(message), "loc": ("cities",), "input": self.cities}])
 
     @model_validator(mode="after")
     def _in_data_window(self, info: ValidationInfo) -> "SearchRequest":

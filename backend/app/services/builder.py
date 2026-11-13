@@ -14,6 +14,7 @@ from datetime import timedelta
 from itertools import product
 
 from app.core.timeutil import DAYS, at, first_pickup, last_pickup, parse_hhmm
+from app.schemas.search import THEMES
 from app.services import package, pricing, travel, validator
 from app.services.travel import CHECKIN_BUFFER, CLOSE_BUFFER, DAY_END, STOP_BUFFER
 
@@ -314,6 +315,8 @@ def _plan_visits(request, spans, stays, legs, intercity, cat, cost):
             memo[key] = _schedule(hotel[day], stops, day, leave.get(day), move, kids)
         return memo[key]
 
+    wanted = THEMES[request.get("theme", "mixed")]
+    miss = (lambda a: a["category"] not in wanted) if wanted else (lambda a: False)  # theme first, then price
     options = {day: [a for a in cat.attractions_in(city) if plan(day, [a])] for day, city in full}
     used, days = set(), {}
     # ponytail: greedy (days with the fewest options first), not a full matching. A plan it cannot fill
@@ -322,7 +325,7 @@ def _plan_visits(request, spans, stays, legs, intercity, cat, cost):
         free = [a for a in options[day] if a["attraction_id"] not in used]
         if not free:
             raise Blocked("NOT_ENOUGH_ATTRACTIONS", _attraction_reason(cat, city, day, kids, used, plan))
-        a = min(free, key=lambda a: (price(a), move.minutes(hotel[day], a), a["attraction_id"]))
+        a = min(free, key=lambda a: (miss(a), price(a), move.minutes(hotel[day], a), a["attraction_id"]))
         used.add(a["attraction_id"])
         cost += price(a)
         days[day] = plan(day, [a])
@@ -337,15 +340,15 @@ def _plan_visits(request, spans, stays, legs, intercity, cat, cost):
             pair = sorted([first, a], key=lambda x: (move.minutes(hotel[day], x), x["attraction_id"]))  # nearest first
             fit = a["attraction_id"] not in used and (plan(day, pair) or plan(day, pair[::-1]))
             if fit:
-                extras.append((1, move.minutes(first, a), price(a), a["attraction_id"], day, a, fit))
+                extras.append((1, miss(a), move.minutes(first, a), price(a), a["attraction_id"], day, a, fit))
     for day in leave:
         if day in hotel and day not in days:  # not the last day (no hotel that night)
             for a in cat.attractions_in(hotel[day]["city"]):
                 fit = a["attraction_id"] not in used and plan(day, [a])
                 if fit:
-                    extras.append((0, move.minutes(hotel[day], a), price(a), a["attraction_id"], day, a, fit))
+                    extras.append((0, miss(a), move.minutes(hotel[day], a), price(a), a["attraction_id"], day, a, fit))
     filled = set()
-    for _, _, p, aid, day, a, fit in sorted(extras, key=lambda e: e[:5]):
+    for _, _, _, p, aid, day, a, fit in sorted(extras, key=lambda e: e[:6]):
         if day not in filled and aid not in used and cost + p <= budget:
             filled.add(day)
             used.add(aid)
@@ -449,7 +452,10 @@ def _valid(request, cat, limit=1, objective="cheapest"):
     if blocker:
         return [], [blocker]
     built, blocked, valid = [], [], []
+    picked = set(request.get("cities", []))  # every package visits every picked city
     for plan in city_plans(request["country"], request["nights"], cat):
+        if not picked <= {city for city, _ in plan}:
+            continue
         try:
             built.append(build_plan(request, plan, cat, objective))
         except Blocked as e:

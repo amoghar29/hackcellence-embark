@@ -23,6 +23,8 @@ class FormRules(BaseModel):
 class FormOptions(BaseModel):
     departure_cities: list[DepartureCity]
     countries: list[str]
+    cities: dict[str, list[str]]
+    themes: list[str]
     rules: FormRules
 
 

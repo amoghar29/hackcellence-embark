@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react'
-import { ArrowLeft, CalendarDays, Clock, Star, Users } from 'lucide-react'
+import { CalendarDays, Clock, Star, Users } from 'lucide-react'
 import PhotoGrid from '../components/PhotoGrid'
+import TripSearch from '../components/TripSearch'
+import { SearchBar } from '../components/SearchForm'
 import { Paginated } from '../components/ui'
 import { badgesFor, loadPicks, loadResults, PICKS, SORTS, travelText } from '../lib/results'
 import { carouselPhotos, itemsOf } from '../lib/trip'
@@ -14,7 +16,7 @@ const Badges = ({ keys }) => keys.length > 0 && <span className="flex flex-wrap 
 
 const Measures = ({ pkg }) => <p className="flex flex-wrap gap-x-4 text-sm text-slate-600">
   <span className="flex items-center gap-1"><Clock size={14} />{travelText(pkg.travel_minutes)} travelling</span>
-  <span className="flex items-center gap-1"><Star size={14} className="text-amber-500" />{pkg.avg_stars} hotel stars</span>
+  <span className="flex items-center gap-1"><Star size={14} className="text-amber-500" />{itemsOf(pkg, 'hotel').map(h => `${h.details?.stars}★`).join(' · ')} hotels</span>
 </p>
 
 // G4: the three best packages the server picked. One package can win several, then it is shown once.
@@ -39,13 +41,16 @@ function Picks({ list, picks }) {
   </section>
 }
 
+// soft background behind each card's photo grid, cycled by package index
+const TINTS = ['bg-sky-100', 'bg-amber-100', 'bg-emerald-100', 'bg-rose-100', 'bg-violet-100', 'bg-teal-100']
+
 function PackageCard({ pkg, idx, badges }) {
   // all photos, shuffled once per card mount (not on every re-render); the grid pages them 6 at a time
   const photos = useMemo(() => carouselPhotos(pkg).sort(() => Math.random() - 0.5), [pkg])
   const over = pkg.remaining_inr < 0
   const t = pkg.traveler
   return <article className="grid overflow-hidden rounded-2xl border border-slate-200 bg-white md:grid-cols-[1fr_1.2fr]">
-    <div className="p-2"><PhotoGrid photos={photos} className="h-full grid-cols-3 grid-rows-2" cell="min-h-24" /></div>
+    <div className={`p-2 ${TINTS[idx % TINTS.length]}`}><PhotoGrid photos={photos} className="h-full grid-cols-3 grid-rows-2" cell="min-h-24" /></div>
     <div className="flex flex-col gap-3 p-5">
       <div>
         <Badges keys={badges} />
@@ -68,13 +73,14 @@ function PackageCard({ pkg, idx, badges }) {
 }
 
 export default function Results() {
-  const [list] = useState(loadResults)
-  const [picks] = useState(loadPicks)
+  const [list, setList] = useState(loadResults)
+  const [picks, setPicks] = useState(loadPicks)
+  const reload = () => { setList(loadResults()); setPicks(loadPicks()); window.scrollTo(0, 0) }
   const [sort, setSort] = useState('cheapest')
   // a package has no id: its position in the list is what the package page opens
   const sorted = list.map((pkg, idx) => ({ pkg, idx })).sort((a, b) => SORTS[sort][1](a.pkg, b.pkg))
   return <main className="mx-auto max-w-5xl px-4 pb-16 pt-6">
-    <a href="#/" className="mb-4 inline-flex items-center gap-1 text-sm text-slate-600 hover:underline"><ArrowLeft size={15} />Edit search</a>
+    <TripSearch Form={SearchBar} onDone={reload} />
     {!list.length ? <div className="p-8 text-center"><p className="mb-4">No search yet.</p><a className="btn btn-primary" href="#/">Plan a trip</a></div> : <>
       <Picks list={list} picks={picks} />
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3">

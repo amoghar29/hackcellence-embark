@@ -49,6 +49,8 @@ def test_menon_request_is_valid(cat):
         "adults": 2,
         "child_ages": [6],
         "budget_inr": 350000,
+        "cities": [],
+        "theme": "mixed",
     }
 
 

@@ -2,6 +2,7 @@
 from app.core.timeutil import fmt
 from app.repositories import catalog_repo
 from app.repositories.catalog_repo import CatalogRepository
+from app.schemas.search import THEMES
 from app.services.errors import NotFound
 
 
@@ -13,6 +14,8 @@ class CatalogService:
         d = self._cat.destinations
         r = d["rules"]
         return {"departure_cities": d["departure_cities"], "countries": [c["name"] for c in d["countries"]],
+                "cities": {c["name"]: [x["name"] for x in c["cities"]] for c in d["countries"]},
+                "themes": list(THEMES),
                 "rules": {"min_nights": r["min_nights"], "max_nights": r["max_nights"],
                           "min_nights_per_city": r["min_nights_per_city"], **r["data_window"]}}
 
