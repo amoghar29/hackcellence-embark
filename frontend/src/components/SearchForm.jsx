@@ -16,6 +16,26 @@ function Field({ label, error, hint, children, id }) {
     {error ? <p id={`${id}-err`} role="alert" className="mt-1 text-sm text-red-600">{error}</p> : hint && <p className="mt-1 text-xs text-slate-500">{hint}</p>}
   </div>
 }
+// Free-text input + filtered dropdown. Shows every city until the user types something that isn't an exact pick.
+function CityPicker({ cities, value, onChange, className, ...aria }) {
+  const [open, setOpen] = useState(false)
+  const q = value.trim().toLowerCase()
+  const exact = cities.some(c => c.airport.toLowerCase() === q || c.city.toLowerCase() === q)
+  const list = exact || !q ? cities : cities.filter(c => `${c.airport} ${c.city}`.toLowerCase().includes(q))
+  return <div className="relative">
+    <input autoComplete="off" maxLength={60} role="combobox" aria-expanded={open} aria-controls="dep-list" placeholder="Search city or airport code"
+      className={className} value={value} {...aria}
+      onFocus={e => { setOpen(true); e.target.select() }} onBlur={() => setOpen(false)}
+      onChange={e => { onChange(e.target.value); setOpen(true) }} onKeyDown={e => e.key === 'Escape' && setOpen(false)} />
+    {open && list.length > 0 && <ul id="dep-list" role="listbox" className="menu absolute z-20 mt-1 max-h-60 w-full flex-nowrap overflow-auto rounded-box border bg-base-100 p-1 shadow-lg">
+      {list.map(c => <li key={c.airport}>
+        <button type="button" role="option" aria-selected={c.airport === value} onMouseDown={e => e.preventDefault()} onClick={() => { onChange(c.airport); setOpen(false) }}>
+          <span className="font-semibold">{c.city}</span><span className="text-slate-500">{c.airport}</span>
+        </button></li>)}
+    </ul>}
+  </div>
+}
+const clamp = (v, lo, hi) => String(Math.min(hi, Math.max(lo, Number(v) || lo)))
 const cls = err => `input input-bordered w-full ${err ? 'input-error' : ''}`
 const Stepper = ({ id, value, min, max, onChange, label }) => <div className="flex items-center gap-3">
   <button type="button" className="btn btn-circle btn-sm" aria-label={`Fewer ${label}`} disabled={value <= min} onClick={() => onChange(value - 1)}>−</button>
@@ -41,8 +61,7 @@ export default function SearchForm({ options, form, setForm, onSubmit, loading, 
 
   return <form onSubmit={submit} noValidate className="grid gap-5 sm:grid-cols-2">
     <Field id="dep" label="Flying from" error={err('departure_city')} hint="Any city or airport code. We tell you if there are no flights from it.">
-      <input list="dep-cities" autoComplete="off" maxLength={60} className={cls(err('departure_city'))} value={form.departure_city} onChange={e => set('departure_city', e.target.value)} {...a('departure_city', 'dep')} />
-      <datalist id="dep-cities">{o.departure_cities.map(c => <option key={c.airport} value={c.airport}>{c.city}</option>)}</datalist>
+      <CityPicker cities={o.departure_cities} value={form.departure_city} onChange={v => set('departure_city', v)} className={cls(err('departure_city'))} {...a('departure_city', 'dep')} />
     </Field>
     <Field id="dest" label="Going to" error={err('country')}>
       <select className={`select select-bordered w-full ${err('country') ? 'select-error' : ''}`} value={form.country} onChange={e => set('country', e.target.value)} {...a('country', 'dest')}>
@@ -50,10 +69,14 @@ export default function SearchForm({ options, form, setForm, onSubmit, loading, 
       </select>
     </Field>
     <Field id="start" label="Arrival date" error={err('start_date')} hint={`Between ${o.rules.first_night} and ${o.rules.last_departure}`}>
-      <input type="date" className={cls(err('start_date'))} min={o.rules.first_night} max={o.rules.last_departure} value={form.start_date} onChange={e => set('start_date', e.target.value)} {...a('start_date', 'start')} />
+      <input type="date" className={cls(err('start_date'))} min={o.rules.first_night} max={o.rules.last_departure} value={form.start_date} onChange={e => set('start_date', e.target.value)}
+        onBlur={() => form.start_date && set('start_date', form.start_date < o.rules.first_night ? o.rules.first_night : form.start_date > o.rules.last_departure ? o.rules.last_departure : form.start_date)} {...a('start_date', 'start')} />
     </Field>
     <Field id="nights" label="Nights" error={err('nights')} hint={`${o.rules.min_nights}–${o.rules.max_nights} nights`}>
-      <input type="number" inputMode="numeric" className={cls(err('nights'))} value={form.nights} onChange={e => set('nights', e.target.value)} {...a('nights', 'nights')} />
+      <input type="number" inputMode="numeric" step={1} min={o.rules.min_nights} max={o.rules.max_nights} className={cls(err('nights'))} value={form.nights}
+        onKeyDown={e => ['-', '+', 'e', 'E', '.'].includes(e.key) && e.preventDefault()}
+        onChange={e => set('nights', e.target.value.replace(/\D/g, '').slice(0, 2))}
+        onBlur={() => set('nights', clamp(form.nights, o.rules.min_nights, o.rules.max_nights))} {...a('nights', 'nights')} />
     </Field>
     <Field id="adults" label="Adults" error={err('adults')}>
       <Stepper id="adults" label="adults" value={Number(form.adults) || 0} min={1} max={10} onChange={v => set('adults', v)} />
