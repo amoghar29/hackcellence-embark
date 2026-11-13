@@ -14,5 +14,15 @@
 /* daisyUI primary = brand navy */
 [data-theme="light"] { --color-primary: #143b66; --color-primary-content: #fff; }
 
+@keyframes experiences-loop {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+.animate-experiences-loop { animation: experiences-loop var(--loop-duration) linear infinite; }
+.animate-experiences-loop:hover { animation-play-state: paused; }
+@media (prefers-reduced-motion: reduce) {
+  .animate-experiences-loop { animation: none; }
+}
+
 :focus-visible { outline: 3px solid #4f9cf9; outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
