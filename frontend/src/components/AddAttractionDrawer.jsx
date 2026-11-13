@@ -16,12 +16,12 @@ export default function AddAttractionDrawer({ pkg, date, onClose, onChanged }) {
 
   useEffect(() => {
     setOpts(null); setPick(null)
-    getChangeOptions(pkg.trip_id, 'attraction', { date: day }).then(r => setOpts(r.options)).catch(e => setErr({ error: e.error }))
+    getChangeOptions(pkg, 'attraction', { date: day }).then(r => setOpts(r.options)).catch(e => setErr({ error: e.error }))
   }, [day])
 
   async function add(o) {
     setBusy(true); setErr(null)
-    try { onChanged(await change(pkg.trip_id, { action: 'add_attraction', attraction_id: o.attraction_id, start: o.start })) }
+    try { onChanged(await change(pkg, { action: 'add_attraction', attraction_id: o.attraction_id, start: o.start })) }
     catch (e) { setErr(e); setPick(null) } finally { setBusy(false) }
   }
 

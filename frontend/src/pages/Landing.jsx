@@ -5,7 +5,7 @@ import NoResultDialog from '../components/NoResultDialog'
 import { getOptions, search } from '../lib/api'
 import { noResultView } from '../lib/trip'
 import { resultsHash } from '../lib/route'
-import { normalize, saveResults } from '../lib/results'
+import { saveResults } from '../lib/results'
 
 export default function Landing() {
   const [options, setOptions] = useState(null)
@@ -19,7 +19,7 @@ export default function Landing() {
 
   async function run(body) {
     setLoading(true); setFatal(''); setFieldError(null); setNoResult(null)
-    try { saveResults(normalize(await search(body))); window.location.hash = resultsHash }
+    try { saveResults(await search(body)); window.location.hash = resultsHash }
     catch (e) {
       if (e.code === 'NO_PACKAGE' || e.code === 'OVER_BUDGET') setNoResult(noResultView(e))
       else if (e.code === 'INVALID_REQUEST' && e.field) setFieldError(e)

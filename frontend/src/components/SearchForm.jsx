@@ -40,10 +40,9 @@ export default function SearchForm({ options, form, setForm, onSubmit, loading, 
   const a = (k, id) => ({ id, 'aria-invalid': !!err(k), 'aria-describedby': err(k) ? `${id}-err` : undefined })
 
   return <form onSubmit={submit} noValidate className="grid gap-5 sm:grid-cols-2">
-    <Field id="dep" label="Flying from" error={err('departure_city')}>
-      <select className={`select select-bordered w-full ${err('departure_city') ? 'select-error' : ''}`} value={form.departure_city} onChange={e => set('departure_city', e.target.value)} {...a('departure_city', 'dep')}>
-        {o.departure_cities.map(c => <option key={c.airport} value={c.airport}>{c.city} ({c.airport})</option>)}
-      </select>
+    <Field id="dep" label="Flying from" error={err('departure_city')} hint="Any city or airport code. We tell you if there are no flights from it.">
+      <input list="dep-cities" autoComplete="off" maxLength={60} className={cls(err('departure_city'))} value={form.departure_city} onChange={e => set('departure_city', e.target.value)} {...a('departure_city', 'dep')} />
+      <datalist id="dep-cities">{o.departure_cities.map(c => <option key={c.airport} value={c.airport}>{c.city}</option>)}</datalist>
     </Field>
     <Field id="dest" label="Going to" error={err('country')}>
       <select className={`select select-bordered w-full ${err('country') ? 'select-error' : ''}`} value={form.country} onChange={e => set('country', e.target.value)} {...a('country', 'dest')}>

@@ -4,7 +4,7 @@ import { Drawer, Img, Paginated, Spinner } from './ui'
 import { API, change, getChangeOptions } from '../lib/api'
 import { duration, fmtDate, fmtTime, imageUrl, money } from '../lib/format'
 
-const Diff = ({ v }) => v === 0 ? <span className="badge">Same price</span>
+export const Diff = ({ v }) => v === 0 ? <span className="badge">Same price</span>
   : <span className={`badge ${v < 0 ? 'badge-success' : 'badge-warning'}`}>{v < 0 ? `Save ${money(-v)}` : `+${money(v)}`}</span>
 
 // Pick an alternative -> see the new total -> confirm. A refused change shows why and leaves the trip as is.
@@ -17,13 +17,13 @@ export default function ChangeDrawer({ pkg, item, onClose, onChanged }) {
 
   useEffect(() => {
     if (isAttr) return
-    getChangeOptions(pkg.trip_id, item.type, isHotel ? { city: item.city } : { direction: item.details.direction })
+    getChangeOptions(pkg, item.type, isHotel ? { city: item.city } : { direction: item.details.direction })
       .then(r => setOpts(r.options)).catch(e => setErr({ error: e.error }))
   }, [])
 
   async function apply(body) {
     setBusy(true); setErr(null)
-    try { onChanged(await change(pkg.trip_id, body)) }
+    try { onChanged(await change(pkg, body)) }
     catch (e) { setErr(e); setPick(null) } finally { setBusy(false) }
   }
   const bodyFor = o => isHotel ? { action: 'change_hotel', city: item.city, hotel_id: o.hotel_id, room_id: o.room_id } : { action: 'change_flight', item_id: item.item_id, flight_id: o.flight_id }
