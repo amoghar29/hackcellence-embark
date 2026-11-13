@@ -20,6 +20,9 @@ THEMES = {"mixed": set(),
           "adventure": {"THEME_PARK", "NATURE", "BEACH", "PARK", "VIEWPOINT"},
           "culture": {"MUSEUM", "CASTLE", "PALACE", "MONUMENT", "DISTRICT", "MARKET"}}
 REQUIRED = ("departure_city", "country", "start_date", "nights", "adults", "budget_inr")
+LABELS = {"departure_city": "Departure city", "country": "Destination country", "start_date": "Start date",
+          "nights": "Nights", "adults": "Adults", "child_ages": "Children's ages", "budget_inr": "Budget"}
+OLD_NAMES = {"bangalore": "BLR", "bombay": "BOM", "madras": "MAA", "new delhi": "DEL"}  # names travelers still type
 
 
 def _invalid(message: str) -> PydanticCustomError:
@@ -77,6 +80,7 @@ class SearchRequest(BaseModel):
         if not isinstance(v, str) or len(" ".join(v.split())) > 60:
             raise _invalid("Departure city must be a city name or an airport code.")
         text = " ".join(v.split())
+        text = OLD_NAMES.get(text.casefold(), text)
         for d in _destinations(info)["departure_cities"]:
             if text.casefold() in (d["airport"].casefold(), d["city"].casefold()):
                 return d["airport"]

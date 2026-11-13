@@ -1,9 +1,78 @@
-# hackcellence-embark
+# holiday.com: Build My Holiday
 
-## Rule checks
+Enter a departure city, country, start date, nights, travelers and budget. The app chooses the cities and builds a complete holiday package (flights, hotels, airport and intercity transfers, attractions) that passes every travel rule. You can then change it and book it for a 10-digit reservation number.
+
+## Start
+
+Needs Docker only.
+
+```
+docker compose up -d
+```
+
+Open http://localhost:5173. The API is at http://localhost:8000 (`/docs` for Swagger). The first start takes a minute or two while the containers install packages and Postgres loads the catalog.
+
+- Stop: `docker compose down`. Bookings are kept.
+- Reset to an empty store (deletes bookings and the cached travel times): `docker compose down -v && docker compose up -d`.
+
+## Architecture
+
+```
+frontend (React + Vite, :5173)  ──JSON──>  backend (FastAPI, :8000)  ──SQL──>  Postgres 17 (:5432)
+  form, results, day plan,                  api/          routers, error shapes      catalog tables (seeded from
+  change drawers, map, export               services/     builder, validator,         data/catalog/*.json),
+                                                          pricing, changes, travel    bookings, travel_times
+                                            repositories/ SQL only
+                                            schemas/      request/response models
+                                            core/         config, db, seed, time
+```
+
+- The backend holds all the logic: choosing cities, building, rule checks (`services/validator.py`) and prices (`services/pricing.py`). The frontend only displays and sends requests.
+- A package has no id until it is booked. Search returns the package with its `request` and `selection`, and every change call sends those two back. The backend re-validates them, so the client is never trusted. Booking writes every part in one transaction, reduces seats and rooms (S2) and returns the reservation number.
+- Every catalog record comes from `data/catalog/`, loaded into Postgres unchanged. The data files are never modified. No AI or LLM is called anywhere.
+
+## City rule
+
+`builder.city_plans` lists every city plan for the country:
+
+- every ordered route of distinct cities that follows the catalog's `links` (so each city change has an intercity transfer)
+- for each route, every split of the nights with at least 2 nights per city
+
+For each plan, the builder picks the cheapest flights, hotels and transfers that satisfy the rules. It then plans 1–2 attractions per full day: the nearest stop first, with travel time in between, back at the hotel by 20:00. A second attraction, and one on an arrival or city-change day, is added only while the package stays within budget. Each finished package must pass `validator.validate()` or it is dropped.
+
+Results show one package per plan that fits the budget, with three picks:
+
+- **cheapest:** lowest total
+- **fastest:** least flight minutes plus intercity transfer minutes
+- **best rated:** highest average hotel stars per night
+
+The "cheapest total" in the over-budget message is the bare package, without the optional extra attractions. So with a large budget, the cheapest shown package can cost a little more than that number.
+
+## What is finished
+
+| Feature | Status |
+|---|---|
+| M1–M8 (form, build, rules, day plan, total/budget/export, changes, confirm + reservation, budget too small) | Done |
+| G1 changes that affect other parts (transfers swapped, missed visits removed with a reason, check-in and travel-time warnings) | Done |
+| G2 price difference on every option, G3 change cities, G4 cheapest / fastest / best rated | Done |
+| S1 quick request in plain words | Not done |
+| S2 booking uses up seats and rooms, refuses a booking for the same last seats or rooms (`SOLD_OUT`), idempotent confirm | Done |
+| S3 trip map with day routes and travel times, theme and city preferences, My bookings, modify a booked trip, photo credits | Done |
+
+The export (section 6 format) has `trip_id` set to the reservation number after confirm (`null` before), with `status: BOOKED` and `booking.reference` on every item.
+
+## Known limitations
+
+- An unbooked package lives in the browser tab (`sessionStorage`). It survives a page refresh and a backend restart, but not a new tab or another device. Booked reservations are in Postgres and open from any tab by their number.
+- A departure city other than the four in `destinations.json` is accepted and answered with "No flights exist from …", plus nearby options. Old names (Bangalore, Bombay, Madras, New Delhi) are mapped to their airports.
+- A request with no package can take 10–25 s, because the backend builds nearby requests to suggest working alternatives.
+- Travel times between places are estimates unless the optional Google warm-up has been run (see below). Travel time is not a judged rule, so a visit added with too little time is kept, with a warning.
+
+## Rule checks and tests
 
 - `python backend/tests/check_trip.py trip.json`: checks an exported package against every travel rule (add `--edited` for a package the traveler changed).
-- `docker compose up -d`, then `cd backend && uv run pytest`: all tests (they use their own database, `embark_test`). Each package the backend returns must pass the checker. Phase 1 only: `uv run pytest --ignore=tests/test_api_changes.py`.
+- With the stack up: `cd backend && uv run pytest` runs all backend tests (they use their own database, `embark_test`). Each package the backend returns must pass the checker.
+- `cd frontend && node --test src/lib/*.test.js`: frontend unit tests.
 
 ## API
 

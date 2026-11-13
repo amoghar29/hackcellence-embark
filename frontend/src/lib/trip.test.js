@@ -81,8 +81,13 @@ test('tripExport keeps the trip format and drops UI-only fields', () => {
   const pkg = { status: 'BOOKED', reference: '1234567890', country: 'Japan', items: [{ item_id: 'i1' }], total_inr: 5, budget_inr: 9,
     request: {}, selection: {}, days: [], cities: [], nights: 6, remaining_inr: 4 }
   const out = tripExport(pkg)
-  assert.deepEqual(Object.keys(out).sort(), ['budget_inr', 'country', 'items', 'reference', 'status', 'total_inr'])
+  assert.deepEqual(Object.keys(out).sort(), ['budget_inr', 'country', 'items', 'reference', 'status', 'total_inr', 'trip_id'])
   assert.equal(out.reference, '1234567890')
+  assert.equal(out.trip_id, '1234567890')  // trip_id is the reservation number once booked
+})
+
+test('tripExport: an unbooked package has trip_id null', () => {
+  assert.equal(tripExport({ status: 'PLANNED', items: [] }).trip_id, null)
 })
 
 test('routeByDay: one line per day, each joined to the previous day\'s last stop', () => {

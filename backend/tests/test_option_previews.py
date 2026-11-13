@@ -93,3 +93,11 @@ def test_empty_attraction_day_says_why(client):
             seen_travel_day = True
             assert "travel day" in body["reason"] and visits[0]["name"] in body["reason"], body["reason"]
     assert seen_travel_day, "no travel day with its visit in this package; pick a request where one exists"
+
+
+def test_attraction_options_start_no_earlier_than_first_package_visits(client):
+    # an all-day park (open 00:00) must not be offered at midnight: options use the same day window as the builder
+    pkg = search(client)
+    for d in pkg["days"][1:-1]:
+        for o in options(client, pkg, "attractions", date=d["date"]):
+            assert o["start"][11:] >= "10:00", o

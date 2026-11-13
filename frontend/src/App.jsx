@@ -18,7 +18,7 @@ export default function App() {
   return <div className="min-h-dvh bg-slate-50 text-ink">
     <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 backdrop-blur">
       <div className="mx-auto flex h-14 max-w-6xl items-center px-4">
-        <a href="#/" className="flex items-center gap-2 text-lg font-bold text-brand"><Compass size={22} />embark</a>
+        <a href="#/" className="flex items-center gap-2 text-lg font-bold text-brand"><Compass size={22} />holiday.com</a>
         <a href="#/find" className="ml-auto mr-4 text-sm font-semibold text-slate-600 hover:underline">Find booking</a>
         <a href="#/bookings" className=" text-sm font-semibold text-slate-600 hover:underline">My bookings</a>
       </div>

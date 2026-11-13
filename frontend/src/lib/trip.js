@@ -85,4 +85,6 @@ export function carouselPhotos(pkg) {
 }
 
 // Judges' trip format (handout section 6): the package without the fields that only the UI uses.
-export const tripExport = ({ request, selection, days, cities, nights, remaining_inr, ...trip }) => trip
+// trip_id is the reservation number once booked; before that the package has no id (null, per the trip format)
+export const tripExport = ({ request, selection, days, cities, nights, remaining_inr, ...trip }) =>
+  ({ trip_id: trip.reference ?? null, ...trip })

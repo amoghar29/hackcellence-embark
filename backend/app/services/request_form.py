@@ -1,7 +1,7 @@
 """Request form (M1): the search body as the normalized request dict. The rules live in schemas.search."""
 from pydantic import ValidationError
 
-from app.schemas.search import SearchRequest
+from app.schemas.search import LABELS, SearchRequest
 
 
 class InvalidRequest(ValueError):
@@ -17,4 +17,4 @@ def validate_request(raw, cat) -> dict:
     except ValidationError as e:
         err = e.errors()[0]
         field = err["loc"][0] if err["loc"] else None
-        raise InvalidRequest(field, f"{field} is required." if err["type"] == "missing" else err["msg"]) from None
+        raise InvalidRequest(field, f"{LABELS.get(field, field)} is required." if err["type"] == "missing" else err["msg"]) from None

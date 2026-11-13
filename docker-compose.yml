@@ -34,5 +34,20 @@ services:
       db:
         condition: service_healthy
 
+  frontend:
+    image: node:22-bookworm-slim
+    container_name: embark-frontend
+    working_dir: /repo/frontend
+    # vite.config.js reads the optional Google key from the repo's .env, so mount the whole repo
+    volumes:
+      - .:/repo
+      - frontend_modules:/repo/frontend/node_modules  # keep the host's Windows node_modules out of it
+    command: sh -c "npm ci --no-audit --no-fund && npx vite --host 0.0.0.0 --port 5173"
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+
 volumes:
   pgdata:
+  frontend_modules:

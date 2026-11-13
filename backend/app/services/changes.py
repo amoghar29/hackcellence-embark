@@ -280,7 +280,9 @@ def attraction_options(request, selection, day, cat):
     for a in cat.list_attractions():
         if a["attraction_id"] in used or DAYS[day.weekday()] not in a["open_days"]:
             continue
-        minute, last = parse_hhmm(a["open_from"]), parse_hhmm(a["open_until"]) - a["visit_minutes"]
+        # same day window as the first package: no visit before builder.VISIT_FROM (an all-day park opens at 00:00)
+        minute = max(parse_hhmm(a["open_from"]), parse_hhmm(builder.VISIT_FROM))
+        last = parse_hhmm(a["open_until"]) - a["visit_minutes"]
         while minute <= last:  # ponytail: tries every 15 minutes through the validator; fine for 56 attractions
             start = datetime.combine(day, datetime.min.time()) + timedelta(minutes=minute)
             try:

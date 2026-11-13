@@ -212,3 +212,17 @@ def test_options_endpoint_lists_departure_cities_and_countries(client):
     assert {(c["airport"], c["city"]) for c in body["departure_cities"]} == {
         ("BLR", "Bengaluru"), ("DEL", "Delhi"), ("BOM", "Mumbai"), ("MAA", "Chennai")}
     assert set(body["countries"]) == {"Japan", "United Arab Emirates"}
+
+
+@pytest.mark.parametrize("given,expected", [("Bangalore", "BLR"), ("bombay", "BOM"), ("Madras", "MAA"),
+                                            ("New Delhi", "DEL")])
+def test_departure_city_old_names_accepted(cat, given, expected):
+    assert ok(cat, departure_city=given)["departure_city"] == expected
+
+
+def test_missing_field_message_is_plain_words(cat):
+    raw = dict(VALID)
+    del raw["departure_city"]
+    with pytest.raises(InvalidRequest) as e:
+        validate_request(raw, cat)
+    assert str(e.value) == "Departure city is required."
