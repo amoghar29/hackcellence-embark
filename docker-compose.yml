@@ -1,0 +1,16 @@
+services:
+  db:
+    image: postgres:17
+    container_name: embark-db
+    environment:
+      POSTGRES_USER: embark
+      POSTGRES_PASSWORD: embark
+      POSTGRES_DB: embark
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./data/hackathon-problem-1-holiday-package/data/catalog:/catalog:ro
+      - pgdata:/var/lib/postgresql/data
+volumes:
+  pgdata:
