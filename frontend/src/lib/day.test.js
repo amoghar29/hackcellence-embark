@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { dayView, photoSections } from './day.js'
+import { dayView, photoSections, dayFull } from './day.js'
 
 const H1 = { item_id: 'hotel-1', type: 'hotel', name: 'Ginza Pearl', start: '2027-04-10', end: '2027-04-13', price_inr: 30000, details: { image: '/h1.jpg', rating: 8.6, nights: 3 } }
 const H2 = { item_id: 'hotel-2', type: 'hotel', name: 'Kyoto Inn', start: '2027-04-13', end: '2027-04-16', price_inr: 24000, details: { image: '/h2.jpg', nights: 3 } }
@@ -47,4 +47,18 @@ test('photoSections: one scrolling strip per section, unique photos, empty secti
   assert.deepEqual(s.map(x => x.type), ['hotel', 'attraction'])
   assert.deepEqual(s[1].photos.map(p => p.path), ['/a1.jpg', '/a2.jpg'])
   assert.equal(s[0].photos[0].rating, 8.6)
+})
+
+test('dayView: travel between the hotel and the visits counts as travel time', () => {
+  const leg = (minutes) => ({ name: 'x', lat: 0, lng: 0, minutes, km: 1, source: 'estimate' })
+  const B1 = { ...A1, details: { ...A1.details, travel_from: leg(30) } }
+  const B2 = { ...A2, details: { ...A2.details, travel_from: leg(15), travel_back: leg(25) } }
+  const v = dayView({ ...pkg, items: [F1, H1, B1, B2, T1, H2] }, pkg.days[0])
+  assert.equal(v.travelMinutes, 70)
+})
+
+test('dayFull: true once a day has 2 attractions, false otherwise or for an unknown day', () => {
+  assert.equal(dayFull(pkg, '2027-04-11'), true)
+  assert.equal(dayFull(pkg, '2027-04-13'), false)
+  assert.equal(dayFull(pkg, '2027-05-01'), false)
 })

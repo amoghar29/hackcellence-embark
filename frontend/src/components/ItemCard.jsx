@@ -1,4 +1,5 @@
-import { Clock, Pencil, Star, TriangleAlert } from 'lucide-react'
+import { Car, Clock, Pencil, Star, TriangleAlert } from 'lucide-react'
+import { legOf } from '../lib/legs'
 import { Img, TypeBadge } from './ui'
 import { API } from '../lib/api'
 import { duration, fmtDate, fmtTime, imageUrl, money } from '../lib/format'
@@ -33,6 +34,9 @@ export default function ItemCard({ item, onOpen, onChange, canChange, updated })
       </div>
       <h3 className="text-lg font-bold leading-tight">{item.name}</h3>
       <p className="flex items-center gap-1 text-sm text-slate-600"><Clock size={14} />{when(item)}</p>
+      {(() => { const l = legOf(item); return l && <p className="flex flex-wrap items-center gap-x-2 text-xs text-slate-500"><Car size={13} />~{duration(l.minutes)} from {l.from} · {l.km} km
+        {l.estimate && <span className="badge badge-ghost badge-xs">estimate</span>}
+        <a href={l.link} target="_blank" rel="noreferrer" className="link link-primary">Directions</a></p> })()}
       <p className="flex flex-wrap gap-x-3 text-sm text-slate-600">{itemFacts(item).map((f, i) => <span key={i} className="flex items-center gap-1">{f.includes('rating') && <Star size={13} className="text-amber-500" />}{f}</span>)}</p>
       {item.warnings?.length > 0 && <ul className="rounded-lg bg-amber-50 p-2 text-sm text-amber-900">{item.warnings.map((w, i) => <li key={i} className="flex gap-2"><TriangleAlert size={15} className="mt-0.5 shrink-0" />{typeof w === 'string' ? w : w.message}</li>)}</ul>}
       <div className="mt-auto flex flex-wrap items-center justify-between gap-2 pt-2">

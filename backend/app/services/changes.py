@@ -7,7 +7,9 @@ import copy
 from datetime import datetime, timedelta
 
 from app.core.timeutil import DAYS, parse_hhmm
-from app.services import builder, package, pricing, validator
+from app.services import builder, package, pricing, travel, validator
+from app.services.package import _reach_times
+from app.services.travel import CHECKIN_BUFFER, CLOSE_BUFFER
 
 
 class Refused(Exception):
@@ -93,6 +95,26 @@ def _drop_missed_visits(request, sel, cat):
                           if not (v["start"].date() == request["start_date"] and v["start"] < reach)]
 
 
+def _check_travel_day_visit(sel, a, start, cat):
+    """Arrival and city-change days: one visit at most, starting after the traveler has reached the city,
+    checked in (CHECKIN_BUFFER) and travelled from the hotel, and ending CLOSE_BUFFER before closing."""
+    day = start.date()
+    stays = sel["stays"]
+    reach = dict(zip([s["check_in"] for s in stays], _reach_times(sel, cat)))
+    if day not in reach:
+        return
+    if any(v["start"].date() == day for v in sel["attractions"]):
+        raise Refused([f"{day} is a travel day: only one experience fits."])
+    hotel = cat.get_hotel(next(s["hotel_id"] for s in stays if s["check_in"] <= day < s["check_out"]))
+    earliest = reach[day] + timedelta(minutes=CHECKIN_BUFFER + travel.for_catalog(cat).minutes(hotel, a))
+    if start < earliest:
+        raise Refused([f"{a['name']} can start at {earliest:%H:%M} at the earliest on {day}: you reach the city at "
+                       f"{reach[day]:%H:%M}, then check in and travel there."])
+    closes = datetime.combine(day, datetime.min.time()) + timedelta(minutes=parse_hhmm(a["open_until"]) - CLOSE_BUFFER)
+    if start + timedelta(minutes=a["visit_minutes"]) > closes:
+        raise Refused([f"{a['name']} must end by {closes:%H:%M} ({CLOSE_BUFFER} min before it closes)."])
+
+
 def notices(request, before, after, change, cat):
     """What the traveler should be told about a change that was applied: [{"level", "message"}]."""
     out = []
@@ -160,6 +182,7 @@ def apply(request, selection, change, cat):
             start = None
         if not a or not start:
             raise Refused(["Choose an attraction from the catalog and a start time (YYYY-MM-DDTHH:MM)."])
+        _check_travel_day_visit(sel, a, start, cat)
         sel["attractions"].append({"attraction_id": a["attraction_id"], "start": start})
         sel["attractions"].sort(key=lambda v: v["start"])
 
@@ -241,18 +264,23 @@ def attraction_options(request, selection, day, cat):
     if not request["start_date"] <= day <= request["end_date"]:
         return []  # outside the trip no start time can pass; skip the slow search
     used = {v["attraction_id"] for v in selection["attractions"]}
+    warned = {aid for aid, leg in package.day_legs(selection, cat).items() if leg["warnings"]}
     out = []
     for a in cat.list_attractions():
         if a["attraction_id"] in used or DAYS[day.weekday()] not in a["open_days"]:
             continue
         minute, last = parse_hhmm(a["open_from"]), parse_hhmm(a["open_until"]) - a["visit_minutes"]
-        while minute <= last:  # ponytail: tries every 30 minutes through the validator; fine for 56 attractions
+        while minute <= last:  # ponytail: tries every 15 minutes through the validator; fine for 56 attractions
             start = datetime.combine(day, datetime.min.time()) + timedelta(minutes=minute)
             try:
-                apply(request, selection, {"action": "add_attraction", "attraction_id": a["attraction_id"],
-                                           "start": start.isoformat()}, cat)
+                sel = apply(request, selection, {"action": "add_attraction", "attraction_id": a["attraction_id"],
+                                                 "start": start.isoformat()}, cat)
             except Refused:
-                minute += 30
+                minute += 15
+                continue
+            # only suggest a time that leaves room to travel to it and on to the next visit (no new warning)
+            if any(leg["warnings"] and aid not in warned for aid, leg in package.day_legs(sel, cat).items()):
+                minute += 15
                 continue
             out.append({"attraction_id": a["attraction_id"], "name": a["name"], "category": a["category"],
                         "start": start.strftime("%Y-%m-%dT%H:%M"),

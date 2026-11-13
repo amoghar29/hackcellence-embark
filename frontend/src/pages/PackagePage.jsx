@@ -17,8 +17,9 @@ import { loadPackage, savePackage } from '../lib/results'
 import { fmtDate, money } from '../lib/format'
 import { carouselPhotos, changeSummary, itemsOf, priceBreakdown, TYPES } from '../lib/trip'
 import { reservationHash, resultsHash } from '../lib/route'
+import { attractionsByDay } from '../lib/legs'
 
-const TABS = [['days', 'Day by day'], ...TYPES.map(t => [t, TYPE_META[t].plural])]
+const TABS = [['days', 'Day by day'], ...TYPES.map(t => [t, t === 'attraction' ? 'Attractions covered' : TYPE_META[t].plural])]
 
 // `id` is the package's position in the search results (a package has no id until it is booked);
 // `reference` opens a reservation.
@@ -142,16 +143,26 @@ export default function PackagePage({ id, reference }) {
       <button key={k} role="tab" aria-selected={tab === k} className={`tab ${tab === k ? 'tab-active font-semibold' : ''}`} onClick={() => setTab(k)}>{label}{TYPES.includes(k) && ` (${itemsOf(pkg, k).length})`}</button>)}</div>
 
     {tab === 'attraction' && canEdit && <button className="btn btn-outline mb-4" onClick={() => setAdding(pkg.start_date)}>+ Add an experience</button>}
-    {TYPES.includes(tab) && (() => { const list = itemsOf(pkg, tab); return list.length === 0 ? <p className="text-slate-600">None in this trip.</p> :
+    {tab === 'attraction' && (() => { const days = attractionsByDay(pkg); return days.length === 0 ? <p className="text-slate-600">No attractions in this trip yet.</p> : <>
+      <p className="mb-4 text-slate-600">{itemsOf(pkg, 'attraction').length} attractions in {new Set(days.map(d => d.city)).size} {new Set(days.map(d => d.city)).size === 1 ? 'city' : 'cities'}, over {days.length} days.</p>
+      <Paginated items={days} size={3} render={d => <section key={d.date} className="mb-5">
+        <h3 className="mb-2 font-bold">{fmtDate(d.date)} · {d.city}</h3>
+        <div className="grid gap-3">{d.items.map(it => <ItemCard key={it.item_id} item={it} onOpen={setDetail} onChange={setChanging} canChange={canEdit} updated={summary?.ids.includes(it.item_id)} />)}</div>
+      </section>} /></> })()}
+    {TYPES.includes(tab) && tab !== 'attraction' && (() => { const list = itemsOf(pkg, tab); return list.length === 0 ? <p className="text-slate-600">None in this trip.</p> :
       <Paginated key={tab} items={list} size={5} render={it => <ItemCard key={it.item_id} item={it} onOpen={setDetail} onChange={setChanging} canChange={canEdit} updated={summary?.ids.includes(it.item_id)} />} /> })()}
-    {tab === 'days' && <DayPlan pkg={pkg} onDay={d => setDayOpen(d.date)} />}
+    {tab === 'days' && (() => {
+      const n = pkg.days.findIndex(d => d.date === dayOpen)
+      if (n < 0) return <DayPlan pkg={pkg} onDay={d => setDayOpen(d.date)} />
+      return <DayDetail inline pkg={pkg} day={pkg.days[n]} n={n} onClose={() => setDayOpen(null)} onStep={s => setDayOpen(pkg.days[n + s].date)}
+        onOpen={setDetail} onChange={canEdit ? setChanging : undefined} onAdd={canEdit && dayOpen >= pkg.start_date && dayOpen <= pkg.end_date ? setAdding : undefined} />
+    })()}
     </div>
-    <aside className="lg:sticky lg:top-20 lg:self-start" aria-label="Map"><MapView pkg={pkg} /></aside></div>
+    <aside className="lg:sticky lg:top-20 lg:self-start" aria-label="Map">
+      <MapView pkg={pkg} onOpen={setDetail} day={tab === 'days' ? dayOpen || '' : ''} onDay={d => { setTab('days'); setDayOpen(d || null) }} /></aside></div>
 
     <p className="mt-10 text-xs text-slate-500">Photos: see <a className="link" href="#/credits" onClick={e => { e.preventDefault(); window.open(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/credits`) }}>photo credits</a>.</p>
 
-    {(() => { const n = pkg.days.findIndex(d => d.date === dayOpen); return n >= 0 && <DayDetail pkg={pkg} day={pkg.days[n]} n={n} onClose={() => setDayOpen(null)}
-      onOpen={setDetail} onChange={canEdit ? setChanging : undefined} onAdd={canEdit && dayOpen >= pkg.start_date && dayOpen <= pkg.end_date ? setAdding : undefined} /> })()}
     {detail && <DetailDrawer item={detail} onClose={() => setDetail(null)} />}
     {adding && <AddAttractionDrawer pkg={pkg} date={adding} onClose={() => setAdding(null)} onChanged={changed} />}
     {planning && <CityPlanDrawer pkg={pkg} onClose={() => setPlanning(false)} onChanged={changed} />}

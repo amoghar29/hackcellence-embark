@@ -198,6 +198,33 @@ def test_add_overlapping_attraction_refused(client, pkg):
     assert_refused(status, body)
 
 
+def test_add_attraction_with_no_time_to_get_there_is_kept_with_a_warning(client, pkg):
+    # the last visit of a day, then another one starting the minute it ends: allowed, but warned (G1)
+    att = max(items(pkg, "attraction"), key=lambda a: a["start"])
+    city = CAT["attractions"][att["catalog_id"]]["city"]
+    used = {i["catalog_id"] for i in items(pkg, "attraction")}
+    e = datetime.fromisoformat(att["end"])
+    em = e.hour * 60 + e.minute
+    other = next(a for a in CAT["attractions"].values() if a["city"] == city and a["attraction_id"] not in used
+                 and DAYS[e.weekday()] in a["open_days"] and e.date().isoformat() not in a.get("closed_dates", [])
+                 and mins(a["open_from"]) <= em and em + a["visit_minutes"] <= mins(a["open_until"]))
+    status, new = change(client, pkg, {"action": "add_attraction", "attraction_id": other["attraction_id"],
+                                       "start": att["end"][:16]})
+    assert status == 200, new
+    added = next(i for i in new["items"] if i["catalog_id"] == other["attraction_id"])
+    assert any("takes about" in w for w in added["warnings"]), added["warnings"]
+    assert added["details"]["travel_from"]["name"] == att["name"]
+
+
+def test_attraction_options_leave_time_to_travel(client, pkg):
+    att = max(items(pkg, "attraction"), key=lambda a: a["start"])
+    r = client.post("/api/packages/options/attractions", json=dict(package_body(pkg), date=att["start"][:10]))
+    assert r.status_code == 200, r.text
+    for o in r.json()["options"]:
+        if o["start"] >= att["end"]:  # after the last visit: at least the buffer plus some travel
+            assert datetime.fromisoformat(o["start"]) >= datetime.fromisoformat(att["end"]) + timedelta(minutes=20)
+
+
 # ---------- a change keeps the package off the server until it is booked ----------
 
 def test_a_changed_package_books_as_it_is(client, pkg):

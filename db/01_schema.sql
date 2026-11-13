@@ -117,6 +117,18 @@ CREATE TABLE IF NOT EXISTS attractions (
   image           text NOT NULL
 );
 
+-- ---------- travel times (optional cache, filled by `python -m app.services.travel --warm`) ----------
+-- Google Distance Matrix results between hotels, attractions and airports of one city. Search only reads it;
+-- a pair that is missing is estimated from lat/lng.
+CREATE TABLE IF NOT EXISTS travel_times (
+  from_id  text NOT NULL,
+  to_id    text NOT NULL,
+  minutes  int NOT NULL,
+  meters   int NOT NULL,
+  source   text NOT NULL,
+  PRIMARY KEY (from_id, to_id)
+);
+
 -- ---------- bookings ----------
 -- A booking exists only once it is booked: search saves nothing. Its key is the 10-digit reservation number.
 -- Older databases had a trip_id key and PLANNED rows; those tables are dropped once (dev data only).

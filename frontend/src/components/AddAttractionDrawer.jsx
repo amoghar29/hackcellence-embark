@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { CircleAlert, TriangleAlert } from 'lucide-react'
 import { Drawer, Img, Paginated, Spinner } from './ui'
+import { dayFull } from '../lib/day'
 import { API, change, getChangeOptions } from '../lib/api'
 import { fmtDate, fmtTime, imageUrl, money } from '../lib/format'
 
@@ -13,6 +14,7 @@ export default function AddAttractionDrawer({ pkg, date, onClose, onChanged }) {
   const [pick, setPick] = useState(null)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
+  const full = dayFull(pkg, day)
 
   useEffect(() => {
     setOpts(null); setPick(null)
@@ -44,7 +46,8 @@ export default function AddAttractionDrawer({ pkg, date, onClose, onChanged }) {
               {pkg.traveler.children > 0 && o.child_friendly === false && <span className="badge badge-warning badge-soft badge-sm mt-1">Not child friendly</span>}</div>
           </div>
           <div className="mt-2 flex items-center justify-between"><span><b>+{money(o.price_inr)}</b></span>
-            <button className="btn btn-sm btn-outline" onClick={() => { setPick(o); setErr(null) }}>Select</button></div>
+            <span title={full ? 'Remove 1 to add another' : undefined}>
+              <button className="btn btn-sm btn-outline" disabled={full} onClick={() => { setPick(o); setErr(null) }}>Select</button></span></div>
           {sel && <div className="mt-3 rounded-lg bg-slate-50 p-3 text-sm">
             <p>New trip total <b>{money(newTotal)}</b> <span className="text-slate-500">(was {money(pkg.total_inr)})</span></p>
             {over && <p className="mt-1 flex items-center gap-1 text-amber-700"><TriangleAlert size={14} />This goes {money(newTotal - pkg.budget_inr)} over your budget.</p>}

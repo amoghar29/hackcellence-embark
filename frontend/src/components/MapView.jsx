@@ -2,51 +2,129 @@ import { useEffect, useRef, useState } from 'react'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import { Spinner } from './ui'
-import { getDetail } from '../lib/api'
+import { API, getDetail } from '../lib/api'
 import { stopsInOrder } from '../lib/trip'
-import { fmtDate } from '../lib/format'
+import { coordsOf, dayRoute, legOf } from '../lib/legs'
+import { GOOGLE_KEY, loadGoogleMaps } from '../lib/gmaps'
+import { duration, fmtDate, fmtTime, imageUrl } from '../lib/format'
 
 const COLORS = { hotel: '#d97706', attraction: '#e11d48' }
 
-// Hotels and attractions in trip order, numbered and joined by a route line.
-// Package items carry no coordinates, so they come from the detail endpoints (once, when the tab opens).
-// Sits beside the plan; a marker's popup names the place and when you are there.
-export default function MapView({ pkg }) {
+// The trip on a map: every hotel and experience in trip order, or one day (hotel → visits → hotel).
+// Clicking a planned place shows its photo, time and how you get there; "Details" opens the full record.
+// Coordinates come with the package; an older saved package fetches the missing ones from the detail endpoints.
+export default function MapView({ pkg, onOpen, day: shown, onDay }) {
   const [coords, setCoords] = useState(null)
-  const [failed, setFailed] = useState(0)
+  // the page picks the day (clicking a day card); without a page that does, the map keeps its own choice
+  const [own, setOwn] = useState('')
+  const day = shown ?? own, setDay = onDay || setOwn
   const el = useRef(null)
+  const visits = new Set(pkg.items.filter(i => i.type === 'attraction').map(i => i.start.slice(0, 10)))
 
   useEffect(() => {
-    const places = pkg.items.filter(i => i.type === 'hotel' || i.type === 'attraction')
-    Promise.allSettled(places.map(i => getDetail(i.type, i.catalog_id).then(d => [i.catalog_id, d]))).then(rs => {
-      setFailed(rs.filter(r => r.status === 'rejected').length)
-      setCoords(Object.fromEntries(rs.filter(r => r.status === 'fulfilled').map(r => r.value)))
-    })
+    const known = coordsOf(pkg)
+    const missing = pkg.items.filter(i => (i.type === 'hotel' || i.type === 'attraction') && !known[i.catalog_id])
+    if (!missing.length) return setCoords(known)
+    Promise.allSettled(missing.map(i => getDetail(i.type, i.catalog_id).then(d => [i.catalog_id, d]))).then(rs =>
+      setCoords({ ...known, ...Object.fromEntries(rs.filter(r => r.status === 'fulfilled').map(r => r.value)) }))
   }, [pkg.items])
 
-  const stops = coords ? stopsInOrder(pkg, coords) : []
+  const withCoords = coords && { ...pkg, items: pkg.items.map(i => coords[i.catalog_id] ? { ...i, details: { ...i.details, ...coords[i.catalog_id] } } : i) }
+  // a day: hotel -> visits -> hotel; a day without visits: that night's hotel; else the whole trip in order
+  const night = day && withCoords?.items.find(i => i.type === 'hotel' && i.start.slice(0, 10) <= day && day < i.end.slice(0, 10) && i.details?.lat != null)
+  const route = day && withCoords ? dayRoute(withCoords, day) : []
+  const stops = !withCoords ? [] : route.length
+    ? route.map((p, n) => ({ ...p, n, date: day, time: p.item.type === 'attraction' ? fmtTime(p.item.start) : '' }))  // the hotel is home; visits 1, 2
+    : night ? [{ item: night, lat: night.details.lat, lng: night.details.lng, n: 1, date: day, time: '' }]
+    : stopsInOrder(withCoords, coords)
+
+  // Google Maps (English) when the key works, else OpenStreetMap with English labels
+  const [engine, setEngine] = useState(GOOGLE_KEY ? 'google' : 'osm')
+  useEffect(() => {
+    const fail = () => setEngine('osm')
+    window.addEventListener('gmaps-failed', fail)
+    return () => window.removeEventListener('gmaps-failed', fail)
+  }, [])
 
   useEffect(() => {
     if (!coords || !el.current || !stops.length) return
-    const m = L.map(el.current, { scrollWheelZoom: false })
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '© OpenStreetMap contributors' }).addTo(m)
-    const pts = stops.map(s => [s.lat, s.lng])
-    L.polyline(pts, { color: '#143b66', weight: 3, dashArray: '6 6' }).addTo(m)
-    stops.forEach(s => {
-      const icon = L.divIcon({ className: '', iconSize: [30, 30], iconAnchor: [15, 15],
-        html: `<div style="background:${COLORS[s.item.type]};color:#fff;width:30px;height:30px;border-radius:50%;display:grid;place-items:center;font-weight:700;border:2px solid #fff;box-shadow:0 1px 4px #0006">${s.n}</div>` })
-      const pop = document.createElement('div')
-      pop.append(Object.assign(document.createElement('b'), { textContent: s.item.name }), document.createElement('br'), `${fmtDate(s.date)} · ${s.time}`)
-      L.marker([s.lat, s.lng], { icon, title: s.item.name }).bindPopup(pop).addTo(m)
-    })
-    m.fitBounds(pts, { padding: [40, 40], maxZoom: 14 })
-    return () => m.remove()
-  }, [coords])
+    const markers = stops.filter((s, i) => stops.findIndex(o => o.item.item_id === s.item.item_id) === i)  // a day route returns to its hotel: one marker
+    if (engine === 'google') {
+      let gone = false
+      loadGoogleMaps().then(g => { if (!gone) drawGoogle(g, el.current, stops, markers, day, onOpen) }).catch(() => !gone && setEngine('osm'))
+      return () => { gone = true }
+    }
+    return drawLeaflet(el.current, stops, markers, day, onOpen)
+  }, [coords, day, engine])
 
   if (!coords) return <Spinner label="Placing your trip on the map…" />
-  if (!stops.length) return <p className="rounded-xl bg-slate-50 p-6 text-slate-600">We couldn't load locations for this trip right now.</p>
   return <div>
-    <div ref={el} className="h-[22rem] rounded-2xl border border-slate-200 lg:h-[calc(100dvh-6rem)]" role="application" aria-label="Trip map: hotels and experiences in trip order" />
-    {failed > 0 && <p className="mt-2 text-sm text-amber-700">{failed} place{failed > 1 ? 's' : ''} couldn't be shown on the map.</p>}
+    <label className="mb-2 flex items-center gap-2 text-sm">
+      <span className="font-semibold">Show</span>
+      <select className="select select-sm" value={day} onChange={e => setDay(e.target.value)} aria-label="Day to show on the map">
+        <option value="">Whole trip</option>
+        {pkg.days.map(({ date: d }, n) => <option key={d} value={d}>Day {n + 1} · {fmtDate(d)}{visits.has(d) ? ' route' : ''}</option>)}
+      </select>
+    </label>
+    {stops.length ? <div key={`${day}-${engine}`} ref={el} className="h-[22rem] rounded-2xl border border-slate-200 lg:h-[calc(100dvh-9rem)]" role="application" aria-label="Trip map: hotels and experiences in order" />
+      : <p className="rounded-xl bg-slate-50 p-6 text-slate-600">We couldn't load locations for this trip right now.</p>}
   </div>
+}
+
+function drawGoogle(g, node, stops, markers, day, onOpen) {
+  const map = new g.Map(node, { mapTypeControl: false, streetViewControl: false, fullscreenControl: true, gestureHandling: 'cooperative' })
+  new g.Polyline({ map, path: stops.map(s => ({ lat: s.lat, lng: s.lng })), strokeColor: '#143b66', strokeWeight: 3,
+    strokeOpacity: day ? 1 : 0, icons: day ? [] : [{ icon: { path: 'M 0,-1 0,1', strokeOpacity: 1, scale: 3 }, offset: '0', repeat: '12px' }] })
+  const info = new g.InfoWindow(), bounds = new g.LatLngBounds()
+  let home = null
+  markers.forEach(s => {
+    const hotel = s.item.type === 'hotel'
+    const m = new g.Marker({ map, position: { lat: s.lat, lng: s.lng }, title: hotel ? `Home: ${s.item.name}` : s.item.name,
+      label: { text: hotel ? '🏠' : String(s.n), color: '#fff', fontWeight: '700', fontSize: hotel ? '18px' : '14px' },
+      zIndex: hotel ? 1000 : undefined,
+      icon: { path: g.SymbolPath.CIRCLE, scale: hotel ? 19 : 14, fillColor: COLORS[s.item.type], fillOpacity: 1, strokeColor: '#fff', strokeWeight: hotel ? 3 : 2 } })
+    const open = () => { info.setContent(popup(s, onOpen, !!day)); info.open({ map, anchor: m }) }
+    m.addListener('click', open)
+    if (day && hotel && !home) home = open
+    bounds.extend(m.getPosition())
+  })
+  map.fitBounds(bounds, 40)
+  if (home) g.event.addListenerOnce(map, 'idle', home)  // on a day, home is highlighted from the start
+  g.event.addListenerOnce(map, 'idle', () => map.getZoom() > 14 && map.setZoom(14))
+}
+
+function drawLeaflet(node, stops, markers, day, onOpen) {
+  const m = L.map(node, { scrollWheelZoom: false })
+  // CARTO's OpenStreetMap tiles label places in English (plain OSM tiles use the local script)
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+    { maxZoom: 18, subdomains: 'abcd', attribution: '© OpenStreetMap contributors © CARTO' }).addTo(m)
+  const pts = stops.map(s => [s.lat, s.lng])
+  L.polyline(pts, { color: '#143b66', weight: 3, dashArray: day ? null : '6 6' }).addTo(m)
+  let home = null
+  markers.forEach(s => {
+    const hotel = s.item.type === 'hotel', size = hotel ? 40 : 30
+    const icon = L.divIcon({ className: '', iconSize: [size, size], iconAnchor: [size / 2, size / 2],
+      html: `<div style="background:${COLORS[s.item.type]};color:#fff;width:${size}px;height:${size}px;border-radius:50%;display:grid;place-items:center;font-weight:700;font-size:${hotel ? 20 : 14}px;border:${hotel ? 3 : 2}px solid #fff;box-shadow:0 1px 6px #0007">${hotel ? '🏠' : s.n}</div>` })
+    const mk = L.marker([s.lat, s.lng], { icon, title: hotel ? `Home: ${s.item.name}` : s.item.name, keyboard: true, zIndexOffset: hotel ? 1000 : 0 })
+      .bindPopup(popup(s, onOpen, !!day), { minWidth: 220 }).addTo(m)
+    if (day && hotel && !home) home = mk
+  })
+  m.fitBounds(pts, { padding: [40, 40], maxZoom: 14 })
+  home?.openPopup()  // on a day, home is highlighted from the start
+  return () => m.remove()
+}
+
+// Built as DOM nodes (not an HTML string) so names from the catalog are never parsed as markup.
+function popup(s, onOpen, oneDay) {
+  const it = s.item, root = document.createElement('div'), add = (tag, props) => root.appendChild(Object.assign(document.createElement(tag), props))
+  const photo = imageUrl(it.details?.image, API)
+  if (photo) add('img', { src: photo, alt: '', style: 'width:100%;height:110px;object-fit:cover;border-radius:8px;margin-bottom:6px' })
+  if (it.type === 'hotel' && oneDay) add('div', { textContent: '🏠 Home for the night: the day starts and ends here', style: 'color:#b45309;font-size:12px;font-weight:600' })
+  add('b', { textContent: it.name })
+  const when = it.type === 'attraction' ? `${fmtDate(it.start)} · ${fmtTime(it.start)}–${fmtTime(it.end)}` : `${fmtDate(it.start)} → ${fmtDate(it.end)}`
+  add('div', { textContent: when, style: 'color:#475569;font-size:12px' })
+  const leg = legOf(it)
+  if (leg) add('div', { textContent: `~${duration(leg.minutes)} from ${leg.from} · ${leg.km} km`, style: 'color:#475569;font-size:12px' })
+  if (onOpen) add('button', { textContent: 'Details', className: 'btn btn-xs btn-primary mt-2', onclick: () => onOpen(it) })
+  return root
 }

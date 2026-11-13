@@ -25,11 +25,17 @@ export function dayView(pkg, day) {
   return {
     events, startAt, endAt, photos,
     visitMinutes: sum(e => e.kind === 'ATTRACTION'),
-    travelMinutes: sum(e => TRAVEL.has(e.kind)),
+    // transfers and flights, plus getting from the hotel to each visit and back
+    travelMinutes: sum(e => TRAVEL.has(e.kind)) + events.filter(e => e.kind === 'ATTRACTION')
+      .reduce((s, e) => s + (e.item?.details?.travel_from?.minutes || 0) + (e.item?.details?.travel_back?.minutes || 0), 0),
     cost: events.filter(e => e.kind in MINUTES).reduce((s, e) => s + (e.item?.price_inr || 0), 0),
     spanMinutes: events.length ? Math.max(...ends) - Math.min(...starts) : 0,
   }
 }
+
+// A day holds at most 2 experiences; a third needs one removed first.
+export const dayFull = (pkg, date) =>
+  (pkg.days.find(d => d.date === date)?.events.filter(e => e.kind === 'ATTRACTION').length ?? 0) >= 2
 
 // The page's photos as one scrolling strip per section (stays, experiences).
 export function photoSections(pkg) {

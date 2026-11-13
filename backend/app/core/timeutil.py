@@ -1,10 +1,12 @@
 """Clock times. Every time in the catalog is local to its place and has no offset:
 compare times at one place only, and never subtract times of two different places."""
 from datetime import datetime, timedelta
+from functools import cache
 
 DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
 
 
+@cache  # the same few dozen strings, parsed hundreds of thousands of times per search
 def parse_hhmm(s):
     """'06:30' -> 390. '24:00' -> 1440 (midnight at the end of the day)."""
     h, m = s.split(":")
@@ -55,5 +57,6 @@ def last_pickup(transfer, latest):
     return None
 
 
+@cache
 def at(day, hhmm):
     return datetime.combine(day, datetime.min.time()) + timedelta(minutes=parse_hhmm(hhmm))

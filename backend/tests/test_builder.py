@@ -16,7 +16,7 @@ from datetime import date, datetime, timedelta
 import pytest
 
 from app.repositories.catalog_repo import CatalogRepository
-from app.services import builder, validator
+from app.services import builder, travel, validator
 from app.services.request_form import validate_request
 from tests.check_trip import check, load_catalog
 from tests.conftest import MENON_REQUEST
@@ -160,16 +160,104 @@ def test_one_city_trip_has_no_transfer_between_cities(cat, name):
 
 
 @pytest.mark.parametrize("changes", BUILDS.values(), ids=BUILDS.keys())
-def test_first_package_has_one_or_two_attractions_on_each_full_day_only(cat, changes):
+def test_first_package_has_one_or_two_attractions_on_each_full_day(cat, changes):
     trip = builder.build(req(cat, **changes), cat)
     start, end = date.fromisoformat(trip["start_date"]), date.fromisoformat(trip["end_date"])
     change_days = {date.fromisoformat(h["start"]) for h in of_type(trip, "hotel")} - {start}
     full_days = {start + timedelta(n) for n in range(1, (end - start).days)} - change_days
     visits = [datetime.fromisoformat(a["start"]).date() for a in of_type(trip, "attraction")]
-    assert set(visits) == full_days
     assert all(1 <= visits.count(d) <= 2 for d in full_days)
+    # arrival and city-change days: optional, at most one; never on the last day or outside the trip
+    assert all(visits.count(d) <= 1 for d in change_days | {start})
+    assert set(visits) <= full_days | change_days | {start}
     ids = [a["catalog_id"] for a in of_type(trip, "attraction")]
     assert len(ids) == len(set(ids))  # each attraction at most once
+
+
+# ---------- a day you can actually do: travel time, buffers, nearest first ----------
+
+def hotel_on(trip, day):
+    """The catalog hotel of that night."""
+    h = next(h for h in of_type(trip, "hotel") if h["start"] <= day.isoformat() < h["end"])
+    return J["hotels"][h["catalog_id"]]
+
+
+def day_plans(trip):
+    """{day: (hotel, earliest start, [(item, attraction record)] by start)} for every day with visits.
+    The earliest start is VISIT_FROM, or reaching the city + CHECKIN_BUFFER on an arrival or city-change day."""
+    plans = {}
+    for a in sorted(of_type(trip, "attraction"), key=lambda a: a["start"]):
+        day = date.fromisoformat(a["start"][:10])
+        if day not in plans:
+            reached = [t["end"] for t in of_type(trip, "transfer")
+                       if t["end"][:10] == day.isoformat() and t["details"]["kind"] in ("AIRPORT_ARRIVAL", "INTERCITY")]
+            earliest = datetime.fromisoformat(f"{day}T{builder.VISIT_FROM}")
+            if reached:
+                earliest = max(earliest, datetime.fromisoformat(max(reached))
+                               + timedelta(minutes=builder.CHECKIN_BUFFER))
+            plans[day] = (hotel_on(trip, day), earliest, [])
+        plans[day][2].append((a, J["attractions"][a["catalog_id"]]))
+    return plans
+
+
+def mins_of(rec_a, rec_b):
+    return timedelta(minutes=travel.estimate(rec_a, rec_b)["minutes"])
+
+
+TRAVEL_CASES = {**{k: v for k, v in BUILDS.items()}, "menon_huge": dict(budget_inr=HUGE),
+                "ten_nights_huge": dict(nights=10, child_ages=[], budget_inr=HUGE)}
+
+
+@pytest.mark.parametrize("changes", TRAVEL_CASES.values(), ids=TRAVEL_CASES.keys())
+def test_each_day_leaves_time_to_travel_and_ends_before_closing(cat, changes):
+    trip = builder.build(req(cat, **changes), cat)
+    for day, (hotel, earliest, visits) in day_plans(trip).items():
+        here, ready = hotel, earliest - mins_of(hotel, visits[0][1])  # leave the hotel in time for the first visit
+        for item, rec in visits:
+            start, end = datetime.fromisoformat(item["start"]), datetime.fromisoformat(item["end"])
+            assert start >= ready + mins_of(here, rec), f"{day}: no time to get to {rec['name']}"
+            closes = datetime.fromisoformat(f"{day}T{rec['open_until']}") if rec["open_until"] < "24:00" \
+                else datetime.combine(day + timedelta(1), datetime.min.time())
+            assert end <= closes - timedelta(minutes=builder.CLOSE_BUFFER), f"{rec['name']} ends too close to closing"
+            here, ready = rec, end + timedelta(minutes=builder.STOP_BUFFER)
+        back = datetime.fromisoformat(visits[-1][0]["end"]) + mins_of(here, hotel)
+        assert back <= datetime.fromisoformat(f"{day}T{builder.DAY_END}"), f"{day}: back at the hotel at {back}"
+
+
+@pytest.mark.parametrize("changes", TRAVEL_CASES.values(), ids=TRAVEL_CASES.keys())
+def test_nearest_visit_first_unless_opening_hours_say_otherwise(cat, changes):
+    trip = builder.build(req(cat, **changes), cat)
+    for day, (hotel, _, visits) in day_plans(trip).items():
+        if len(visits) == 2:
+            (_, first), (_, second) = visits
+            near_first = mins_of(hotel, first) <= mins_of(hotel, second)
+            hours = second["open_from"] > first["open_from"] or first["open_until"] < second["open_until"]
+            assert near_first or hours, f"{day}: {first['name']} is farther from the hotel than {second['name']}"
+
+
+def test_arrival_or_city_change_day_gets_a_visit_when_there_is_time(cat):
+    found = 0
+    for changes in TRAVEL_CASES.values():
+        trip = builder.build(req(cat, **dict(changes, budget_inr=HUGE)), cat)
+        start = trip["start_date"]
+        change_days = {h["start"] for h in of_type(trip, "hotel")} - {start}
+        found += sum(a["start"][:10] in change_days | {start} for a in of_type(trip, "attraction"))
+    assert found  # checked for timing by the test above
+
+
+@pytest.mark.parametrize("changes", TRAVEL_CASES.values(), ids=TRAVEL_CASES.keys())
+def test_visits_carry_the_leg_from_the_previous_stop(cat, changes):
+    trip = builder.build(req(cat, **changes), cat)
+    for day, (hotel, _, visits) in day_plans(trip).items():
+        here = hotel
+        for item, rec in visits:
+            leg = item["details"]["travel_from"]
+            assert leg["name"] == here["name"] and (leg["lat"], leg["lng"]) == (here["lat"], here["lng"])
+            assert leg["minutes"] == travel.estimate(here, rec)["minutes"] and leg["source"] == "estimate"
+            here = rec
+        back = visits[-1][0]["details"]["travel_back"]
+        assert back["name"] == hotel["name"] and back["minutes"] == travel.estimate(here, hotel)["minutes"]
+        assert (item["details"]["lat"], item["details"]["lng"]) == (rec["lat"], rec["lng"])
 
 
 def test_second_visit_fits_the_day_when_the_budget_allows(cat):

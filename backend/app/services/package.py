@@ -10,8 +10,9 @@ another item is changed or removed.
 """
 from datetime import date, timedelta
 
-from app.core.timeutil import fmt
-from app.services import pricing
+from app.core.timeutil import at, fmt
+from app.services import pricing, travel
+from app.services.travel import DAY_END
 
 
 def travel_minutes(items):
@@ -30,6 +31,39 @@ def _reach_times(selection, cat):
     """Local time the traveler gets to each stay: after the airport transfer, or after the transfer from the last city."""
     legs = [selection["arrival"]] + selection["intercity"]
     return [leg["pickup"] + timedelta(minutes=cat.get_transfer(leg["transfer_id"])["duration_minutes"]) for leg in legs]
+
+
+def day_legs(selection, cat):
+    """{attraction_id: {"travel_from", "travel_back" (last visit of the day only), "warnings"}}.
+    A leg is {name, lat, lng, minutes, km, source}: where the traveler comes from (the previous visit that day,
+    else the hotel of that night) or goes back to. A gap shorter than the travel time, or getting back to
+    the hotel after DAY_END, is a warning (G1), never a refusal: travel time is not a travel rule."""
+    move = travel.for_catalog(cat)
+    hotels = [(s["check_in"], s["check_out"], cat.get_hotel(s["hotel_id"])) for s in selection["stays"]]
+    by_day = {}
+    for v in sorted(selection["attractions"], key=lambda v: v["start"]):
+        by_day.setdefault(v["start"].date(), []).append((v, cat.get_attraction(v["attraction_id"])))
+    leg = lambda a, b: {"name": a["name"], "lat": a["lat"], "lng": a["lng"], **move.leg(a, b)}
+    out = {}
+    for day, visits in by_day.items():
+        hotel = next((h for ci, co, h in hotels if ci <= day < co), None)
+        here, free = hotel, None
+        for v, a in visits:
+            w, came = [], here and leg(here, a)
+            if came and free and v["start"] < free + timedelta(minutes=came["minutes"]):
+                gap = (v["start"] - free) // timedelta(minutes=1)
+                w.append(f"Only {max(gap, 0)} min after {here['name']}; getting here takes about "
+                         f"{came['minutes']} min.")
+            out[a["attraction_id"]] = {"travel_from": came, "travel_back": None, "warnings": w}
+            here, free = a, v["start"] + timedelta(minutes=a["visit_minutes"])
+        if hotel:
+            back = {"name": hotel["name"], "lat": hotel["lat"], "lng": hotel["lng"], **move.leg(here, hotel)}
+            out[here["attraction_id"]]["travel_back"] = back
+            home = free + timedelta(minutes=back["minutes"])
+            if home > at(day, DAY_END):
+                out[here["attraction_id"]]["warnings"].append(
+                    f"You get back to {hotel['name']} at about {home:%H:%M}, after {DAY_END}.")
+    return out
 
 
 def assemble(request, selection, cat, reference=None):
@@ -81,17 +115,22 @@ def assemble(request, selection, cat, reference=None):
                     "Ask for early check-in or luggage storage."] if early else []
         add(f"hotel-{n}", "hotel", h["name"], h["city"], h["hotel_id"], s["check_in"].isoformat(), s["check_out"].isoformat(),
             s["rooms"], pricing.hotel_price(room, s["rooms"], nights),
-            {"area": h["area"], "stars": h["stars"], "rating": h["rating"], "room_type": room["room_type"],
+            {"area": h["area"], "lat": h["lat"], "lng": h["lng"], "stars": h["stars"], "rating": h["rating"],
+             "room_type": room["room_type"],
              "room_name": room["name"], "rooms": s["rooms"], "nights": nights, "price_per_night_inr": room["price_inr"],
              "check_in_from": h["check_in_from"], "check_out_until": h["check_out_until"], "image": "/" + h["image"]},
             room_id=room["room_id"], warnings=warnings)
 
+    legs = day_legs(selection, cat)
     for visit in selection["attractions"]:
         a = cat.get_attraction(visit["attraction_id"])
+        lg = legs[a["attraction_id"]]
         add(f"attraction-{a['attraction_id']}", "attraction", a["name"], a["city"], a["attraction_id"], fmt(visit["start"]),
             fmt(visit["start"] + timedelta(minutes=a["visit_minutes"])), N, pricing.attraction_price(a, A, C),
             {"category": a["category"], "visit_minutes": a["visit_minutes"], "open_from": a["open_from"],
-             "open_until": a["open_until"], "child_friendly": a["child_friendly"], "image": "/" + a["image"]})
+             "open_until": a["open_until"], "child_friendly": a["child_friendly"], "image": "/" + a["image"],
+             "lat": a["lat"], "lng": a["lng"], "travel_from": lg["travel_from"], "travel_back": lg["travel_back"]},
+            warnings=lg["warnings"])
 
     items.sort(key=lambda i: (i["start"], i["item_id"]))
     total = sum(i["price_inr"] for i in items)
