@@ -85,12 +85,13 @@ export default function SearchForm({ options, form, setForm, onSubmit, loading, 
       <Stepper id="kids" label="children" value={form.child_ages.length} min={0} max={6} onChange={setKids} />
     </Field>
     {form.child_ages.length > 0 && <fieldset className="sm:col-span-2">
-      <legend className="mb-1 text-sm font-semibold text-slate-700">Children's ages (on the trip)</legend>
-      <div className="flex flex-wrap gap-3">{form.child_ages.map((age, i) =>
-        <select key={i} aria-label={`Age of child ${i + 1}`} className="select select-bordered select-sm" value={age}
-          onChange={e => set('child_ages', form.child_ages.map((x, j) => j === i ? e.target.value : x))}>
-          {Array.from({ length: 18 }, (_, n) => <option key={n} value={n}>{n === 0 ? 'Under 1' : `${n} yr`}</option>)}
-        </select>)}</div>
+      <legend className="mb-1 text-sm font-semibold text-slate-700">Children's ages (in years)</legend>
+      <div className="grid max-w-xs grid-cols-1 gap-2">{form.child_ages.map((age, i) =>
+        <label key={i} className="flex items-center justify-between gap-2 text-sm font-medium text-slate-700">Child {i + 1}
+          <input type="number" inputMode="numeric" min="0" max="17" step="1" aria-label={`Age of child ${i + 1}`} className="input input-bordered input-sm w-32"
+            value={age} onKeyDown={e => ['-', '+', 'e', 'E', '.'].includes(e.key) && e.preventDefault()}
+            onChange={e => set('child_ages', form.child_ages.map((x, j) => j === i ? e.target.value : x))} />
+        </label>)}</div>
     </fieldset>}
     <div className="sm:col-span-2">
       <Field id="budget" label="Total budget (₹, for everyone)" error={err('budget_inr')} hint="Flights, stays, transfers and experiences all count.">
