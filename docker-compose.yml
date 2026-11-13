@@ -12,5 +12,27 @@ services:
       - ./db:/docker-entrypoint-initdb.d:ro
       - ./data/hackathon-problem-1-holiday-package/data/catalog:/catalog:ro
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U embark -d embark"]
+      interval: 2s
+      retries: 30
+
+  backend:
+    image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+    container_name: embark-backend
+    working_dir: /repo/backend
+    # app/core/config.py resolves db/ and data/ from the repo root, so mount the whole repo
+    volumes:
+      - .:/repo
+    environment:
+      DATABASE_URL: postgresql://embark:embark@db:5432/embark
+      UV_PROJECT_ENVIRONMENT: /venv  # keep the host's Windows .venv out of it
+    command: uv run --frozen --no-dev uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   pgdata:
