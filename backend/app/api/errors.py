@@ -12,6 +12,7 @@ from app.services.builder import NoPackage, OverBudget
 from app.services.changes import Refused
 from app.services.errors import IdempotencyKeyReused, NotFound, SoldOut
 from app.services.request_form import InvalidRequest
+from app.services.travel import TravelUnavailable
 
 log = logging.getLogger(__name__)
 
@@ -67,6 +68,10 @@ def _key_reused(request: Request, e: IdempotencyKeyReused) -> JSONResponse:
     return _error(request, 409, "IDEMPOTENCY_KEY_REUSED", str(e))
 
 
+def _travel_unavailable(request: Request, e: TravelUnavailable) -> JSONResponse:
+    return _error(request, 503, "TRAVEL_UNAVAILABLE", "Live travel times from Google Maps are unavailable. Try again.")
+
+
 def _bad_value(request: Request, e: psycopg.DataError) -> JSONResponse:
     # e.g. a NUL character in an id, which Postgres text cannot hold
     return _error(request, 400, "INVALID_REQUEST", "A value in the request is not valid.")
@@ -86,6 +91,7 @@ HANDLERS = {
     Refused: _change_refused,
     SoldOut: _sold_out,
     IdempotencyKeyReused: _key_reused,
+    TravelUnavailable: _travel_unavailable,
     psycopg.DataError: _bad_value,
     Exception: _unexpected,
 }

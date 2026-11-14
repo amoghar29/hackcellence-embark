@@ -32,7 +32,7 @@ class Settings:
     cors_origins: tuple[str, ...] = field(
         default_factory=lambda: tuple(o.strip() for o in _env("CORS_ORIGINS", "*").split(",")))
     log_level: str = field(default_factory=lambda: _env("LOG_LEVEL", "INFO").upper())
-    # optional: only `python -m app.services.travel --warm` uses it; search never calls Google
+    # required: every travel time comes from the Google Routes API
     google_maps_key: str = field(default_factory=lambda: os.environ.get("GOOGLE_MAPS_KEY")
                                  or os.environ.get("GOOGLE_MAP_API") or _dotenv().get("GOOGLE_MAP_API", ""))
 

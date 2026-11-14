@@ -66,7 +66,7 @@ The export (section 6 format) has `trip_id` set to the reservation number after 
 - An unbooked package lives in the browser tab (`sessionStorage`). It survives a page refresh and a backend restart, but not a new tab or another device. Booked reservations are in Postgres and open from any tab by their number.
 - A departure city other than the four in `destinations.json` is accepted and answered with "No flights exist from …", plus nearby options. Old names (Bangalore, Bombay, Madras, New Delhi) are mapped to their airports.
 - A request with no package can take 10–25 s, because the backend builds nearby requests to suggest working alternatives.
-- Travel times between places are estimates unless the optional Google warm-up has been run (see below). Travel time is not a judged rule, so a visit added with too little time is kept, with a warning.
+- Travel times between places always come from the Google Routes API (see below); without Google, search answers 503 `TRAVEL_UNAVAILABLE`. Travel time is not a judged rule, so a visit added with too little time is kept, with a warning.
 
 ## Rule checks and tests
 
@@ -82,14 +82,14 @@ The API contract (endpoints, requests, responses, errors) is in [docs/API.md](do
 
 Each day is planned as a trip you can actually take. The traveler leaves the hotel, visits the nearest stop first, and allows travel time between stops plus 15 minutes after each visit. Every visit ends at least 30 minutes before closing, and the traveler is back at the hotel by 20:00. Arrival and city-change days get a visit only when the traveler reaches the city early enough. If a traveler adds a visit with no time to get there, the package keeps it and shows a warning. Constants are at the top of `backend/app/services/travel.py`.
 
-Without Google data, travel times are estimated from the catalog's lat/lng (straight line × 1.4, at 20 km/h, plus 10 minutes). This needs no key and gives the same plan every run. For real road times from Google (optional):
+Every travel time is a real road time from the Google Routes API; there is no formula estimate. Setup (required):
 
 1. Put `GOOGLE_MAP_API=...` in the repo's `.env` (gitignored; never commit or zip it). In the key's Google Cloud project, enable the **Routes API** (travel times) and the **Maps JavaScript API** (the map).
-2. `cd backend && uv run python -m app.services.travel --dry-run` shows how many elements it would request (about 2,550 for the whole catalog, billed by Google per element). Then run `uv run python -m app.services.travel --warm` once.
+2. `cd backend && uv run python -m app.services.travel --dry-run` shows how many elements it would request (about 2,550 for the whole catalog, billed by Google per element). Then run `uv run python -m app.services.travel --warm` once (recommended, so search rarely waits on Google).
 
 With the key, the trip map is Google Maps in English. Without it, or if Google refuses the key, the map falls back to OpenStreetMap with English labels. The key ends up in the built frontend, as every browser Maps key does, so restrict it to your site's referrers in Google Cloud.
 
-The warm-up stores the results in the `travel_times` table. Search only reads that table and never calls Google, so it stays fast and works offline. In the UI, each leg has a "Directions" link to Google Maps (no key needed); legs without Google data are marked "estimate".
+Results are cached in the `travel_times` table. Search reads that table and fetches any missing pair from Google on the spot, saving it for next time. If Google cannot answer (no key, network down, no route), search fails with 503 `TRAVEL_UNAVAILABLE` rather than guessing. In the UI, each leg has a "Directions" link to Google Maps.
 
 ## Database
 

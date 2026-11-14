@@ -200,8 +200,12 @@ def day_plans(trip):
     return plans
 
 
+def google_leg(rec_a, rec_b):
+    return travel.Travel({}, key="test-key", save=lambda rows: None).leg(rec_a, rec_b)  # the fake Routes API
+
+
 def mins_of(rec_a, rec_b):
-    return timedelta(minutes=travel.estimate(rec_a, rec_b)["minutes"])
+    return timedelta(minutes=google_leg(rec_a, rec_b)["minutes"])
 
 
 TRAVEL_CASES = {**{k: v for k, v in BUILDS.items()}, "menon_huge": dict(budget_inr=HUGE),
@@ -253,10 +257,10 @@ def test_visits_carry_the_leg_from_the_previous_stop(cat, changes):
         for item, rec in visits:
             leg = item["details"]["travel_from"]
             assert leg["name"] == here["name"] and (leg["lat"], leg["lng"]) == (here["lat"], here["lng"])
-            assert leg["minutes"] == travel.estimate(here, rec)["minutes"] and leg["source"] == "estimate"
+            assert leg["minutes"] == google_leg(here, rec)["minutes"] and leg["source"] == "google"
             here = rec
         back = visits[-1][0]["details"]["travel_back"]
-        assert back["name"] == hotel["name"] and back["minutes"] == travel.estimate(here, hotel)["minutes"]
+        assert back["name"] == hotel["name"] and back["minutes"] == google_leg(here, hotel)["minutes"]
         assert (item["details"]["lat"], item["details"]["lng"]) == (rec["lat"], rec["lng"])
 
 

@@ -117,9 +117,8 @@ CREATE TABLE IF NOT EXISTS attractions (
   image           text NOT NULL
 );
 
--- ---------- travel times (optional cache, filled by `python -m app.services.travel --warm`) ----------
--- Google Distance Matrix results between hotels, attractions and airports of one city. Search only reads it;
--- a pair that is missing is estimated from lat/lng.
+-- ---------- travel times (cache of Google Routes API results; prefilled by `python -m app.services.travel --warm`) ----------
+-- Road times between hotels, attractions and airports. Search fetches a missing pair from Google and stores it here.
 CREATE TABLE IF NOT EXISTS travel_times (
   from_id  text NOT NULL,
   to_id    text NOT NULL,

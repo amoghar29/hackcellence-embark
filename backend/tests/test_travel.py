@@ -1,47 +1,30 @@
-"""Travel time between two places (app.services.travel).
+"""Travel time between two places (app.services.travel). Always Google's: no formula estimate.
 
-  travel.estimate(a, b) -> {"minutes", "km", "source": "estimate"} from catalog lat/lng only
   travel.fetch(origins, destinations, key) -> [(from_id, to_id, minutes, meters, "google")], [] on any failure
-  travel.Travel(cache).leg(a, b) -> the cached Google leg when there is one, else the estimate
+  travel.Travel(cache, key, save).leg(a, b) -> the cached Google leg, else fetched from Google now (and saved);
+      raises travel.TravelUnavailable when Google gives no time (no key, network down, no route)
   travel.for_catalog(cat) -> a Travel over the travel_times table (read once per catalog repository)
-Search never calls Google: only the warm-up command (python -m app.services.travel --warm) does.
+The warm-up command (python -m app.services.travel --warm) prefills the cache so search rarely waits on Google.
 """
-import io
 import json
 
 import pytest
 
 from app.services import builder, travel
 from app.services.request_form import validate_request
-from tests.conftest import MENON_REQUEST
+from tests.conftest import MENON_REQUEST, FakeResponse
 
 TOKYO_STATION = {"hotel_id": "H", "lat": 35.6812, "lng": 139.7671}
 SENSOJI = {"attraction_id": "A", "lat": 35.7148, "lng": 139.7967}
 
 
-def test_same_place_takes_only_the_fixed_overhead():
-    leg = travel.estimate(TOKYO_STATION, TOKYO_STATION)
-    assert leg == {"minutes": travel.OVERHEAD_MINUTES, "km": 0.0, "source": "estimate"}
-
-
-def test_estimate_across_central_tokyo_is_sane():
-    leg = travel.estimate(TOKYO_STATION, SENSOJI)  # about 4.6 km in a straight line
-    assert 20 <= leg["minutes"] <= 45 and leg["minutes"] % 5 == 0
-    assert 5 <= leg["km"] <= 8
-    assert travel.estimate(SENSOJI, TOKYO_STATION) == leg
+def test_there_is_no_formula_estimate():
+    assert not hasattr(travel, "estimate")
 
 
 def test_place_id_comes_from_any_catalog_record():
     assert travel.place_id(TOKYO_STATION) == "H" and travel.place_id(SENSOJI) == "A"
     assert travel.place_id({"code": "NRT", "lat": 0, "lng": 0}) == "NRT"
-
-
-class FakeResponse(io.BytesIO):
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
 
 
 def test_fetch_reads_the_routes_api_route_matrix(monkeypatch):
@@ -76,21 +59,53 @@ def test_failed_fetch_returns_nothing(monkeypatch):
     assert travel.fetch([TOKYO_STATION], [SENSOJI], "k3y") == []
 
 
-def test_cached_leg_wins_over_the_estimate():
-    t = travel.Travel({("H", "A"): (7, 1000, "google")})
+def test_cached_leg_is_used_without_calling_google(monkeypatch):
+    def no_network(*a, **k):
+        raise AssertionError("a cached pair must not call Google")
+
+    monkeypatch.setattr(travel, "urlopen", no_network)
+    t = travel.Travel({("H", "A"): (7, 1000, "google")}, key="k3y", save=lambda rows: None)
     assert t.leg(TOKYO_STATION, SENSOJI) == {"minutes": 7, "km": 1.0, "source": "google"}
-    assert t.leg(SENSOJI, TOKYO_STATION) == travel.estimate(SENSOJI, TOKYO_STATION)  # only that direction is cached
     assert t.minutes(TOKYO_STATION, SENSOJI) == 7
 
 
-def test_search_never_calls_the_network(cat, monkeypatch):
-    def no_network(*a, **k):
-        raise AssertionError("search must not call Google")
+def test_missing_leg_is_fetched_from_google_once_and_saved(monkeypatch):
+    calls, saved = [], []
+    body = [{"duration": "600s", "distanceMeters": 3000, "condition": "ROUTE_EXISTS"}]
 
-    monkeypatch.setenv("GOOGLE_MAPS_KEY", "k3y")
-    monkeypatch.setattr(travel, "urlopen", no_network)
+    def fake(req, timeout):
+        calls.append(req)
+        return FakeResponse(json.dumps(body).encode())
+
+    monkeypatch.setattr(travel, "urlopen", fake)
+    t = travel.Travel({}, key="k3y", save=saved.extend)
+    assert t.leg(SENSOJI, TOKYO_STATION) == {"minutes": 10, "km": 3.0, "source": "google"}
+    assert t.leg(SENSOJI, TOKYO_STATION)["minutes"] == 10
+    assert len(calls) == 1 and saved == [("A", "H", 10, 3000, "google")]
+
+
+def test_no_google_time_raises_instead_of_guessing(monkeypatch):
+    with pytest.raises(travel.TravelUnavailable):
+        travel.Travel({}, key="", save=lambda rows: None).leg(TOKYO_STATION, SENSOJI)  # no key
+    monkeypatch.setattr(travel, "urlopen", lambda req, timeout: FakeResponse(b"[]"))  # no route
+    with pytest.raises(travel.TravelUnavailable):
+        travel.Travel({}, key="k3y", save=lambda rows: None).leg(TOKYO_STATION, SENSOJI)
+
+
+def test_search_gets_every_leg_from_google(cat):
     trip = builder.build(validate_request(MENON_REQUEST, cat), cat)
-    assert trip["items"]
+    legs = [i["details"][k] for i in trip["items"] if i["type"] == "attraction"
+            for k in ("travel_from", "travel_back") if k in i["details"]]
+    assert legs and all(leg["source"] == "google" for leg in legs)
+
+
+def test_search_says_so_when_google_is_unreachable(client, monkeypatch):
+    def boom(req, timeout):
+        raise OSError("network down")
+
+    monkeypatch.setattr(travel, "urlopen", boom)
+    r = client.post("/api/packages/search", json=MENON_REQUEST)
+    assert r.status_code == 503 and r.json()["code"] == "TRAVEL_UNAVAILABLE"
 
 
 def test_for_catalog_reads_the_cache_table(cat):

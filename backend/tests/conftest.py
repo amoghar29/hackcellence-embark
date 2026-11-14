@@ -1,4 +1,5 @@
 import copy
+import io
 import json
 import os
 from pathlib import Path
@@ -58,6 +59,42 @@ def restore_inventory(seeded_db):
                      "WHERE f.flight_id = s.flight_id AND f.seats_left <> s.seats_left")
         conn.execute("UPDATE availability a SET rooms_left = s.rooms_left FROM seed_availability s "
                      "WHERE a.room_id = s.room_id AND a.date = s.date AND a.rooms_left <> s.rooms_left")
+
+
+class FakeResponse(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def fake_routes_api(req, timeout):
+    """Stand-in for the Google Routes API route matrix, so tests run offline and plans stay the same."""
+    sent = json.loads(req.data)
+    ll = lambda p: p["waypoint"]["location"]["latLng"]
+    body = []
+    for i, o in enumerate(sent["origins"]):
+        for j, d in enumerate(sent["destinations"]):
+            a, b = ll(o), ll(d)
+            km = (abs(a["latitude"] - b["latitude"]) + abs(a["longitude"] - b["longitude"])) * 111
+            body.append({"originIndex": i, "destinationIndex": j, "duration": f"{round(300 + km * 180)}s",
+                         "distanceMeters": round(km * 1000), "condition": "ROUTE_EXISTS"})
+    return FakeResponse(json.dumps(body).encode())
+
+
+@pytest.fixture(autouse=True)
+def google_maps(monkeypatch):
+    """Every test talks to the fake Routes API with a key set; fetched legs are not saved to the test database."""
+    from app.core.config import get_settings
+    from app.services import travel
+
+    monkeypatch.setattr(travel, "urlopen", fake_routes_api)
+    monkeypatch.setattr(travel, "save", lambda rows: None)
+    monkeypatch.setenv("GOOGLE_MAPS_KEY", "test-key")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 @pytest.fixture

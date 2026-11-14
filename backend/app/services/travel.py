@@ -1,9 +1,10 @@
 """Travel time between two catalog places (hotels, attractions, airports: anything with lat/lng).
 
-Search reads the travel_times cache and estimates every pair that is not in it, so it is fast, works
-offline and gives the same plan every time. Only the warm-up command calls Google, once:
+Every time comes from the Google Routes API (key: GOOGLE_MAP_API in the repo's .env, Routes API enabled); there
+is no formula estimate. Search reads the travel_times cache and fetches any missing pair from Google on the spot,
+saving it. The warm-up prefills the cache so search rarely waits on Google:
 
-    uv run python -m app.services.travel --warm      (key: GOOGLE_MAP_API in the repo's .env, Routes API enabled)
+    uv run python -m app.services.travel --warm
 """
 import argparse
 import json
@@ -13,9 +14,6 @@ from urllib.request import Request, urlopen
 
 log = logging.getLogger(__name__)
 
-ROAD_FACTOR = 1.4       # roads are longer than the straight line
-CITY_KMH = 20           # average door-to-door speed in a city (taxi or train, with walking)
-OVERHEAD_MINUTES = 10   # getting out, waiting, walking to the entrance
 # a day you can actually do (used by the builder to plan and by the package to warn)
 DAY_END = "20:00"       # back at the hotel by then
 CLOSE_BUFFER = 30       # a visit ends at least this long before the place closes
@@ -35,29 +33,34 @@ def place_id(rec):
     return rec.get("attraction_id") or rec.get("hotel_id") or rec.get("code")
 
 
-def estimate(a, b):
-    """{"minutes", "km", "source": "estimate"} from lat/lng alone; minutes rounded up to 5."""
-    # ponytail: one city speed, no traffic or timetables; run the Google warm-up for real times
-    lat1, lng1, lat2, lng2 = map(math.radians, (a["lat"], a["lng"], b["lat"], b["lng"]))
-    h = math.sin((lat2 - lat1) / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin((lng2 - lng1) / 2) ** 2
-    km = 2 * 6371 * math.asin(math.sqrt(h)) * ROAD_FACTOR
-    minutes = OVERHEAD_MINUTES + km / CITY_KMH * 60
-    return {"minutes": int(math.ceil(minutes / 5 - 1e-9) * 5), "km": round(km, 1), "source": "estimate"}
+class TravelUnavailable(RuntimeError):
+    """Google gave no travel time for a pair (no key, network or API error, no route)."""
+
+
+def save(rows):
+    """Stores fetched legs in travel_times on a connection of their own (the request's may roll back)."""
+    from app.core import db
+    from app.repositories.travel_repo import TravelRepository
+    with db.connect() as conn:
+        TravelRepository(conn).put_many(rows)
 
 
 class Travel:
-    def __init__(self, cache):
+    def __init__(self, cache, key, save):
         self._cache = cache  # {(from_id, to_id): (minutes, meters, source)}
-        self._estimates = {}
+        self._key, self._save = key, save
 
     def leg(self, a, b):
-        key = (place_id(a), place_id(b))
-        hit = self._cache.get(key)
-        if hit:
-            return {"minutes": hit[0], "km": round(hit[1] / 1000, 1), "source": hit[2]}
-        if key not in self._estimates:  # the builder asks for the same pairs thousands of times
-            self._estimates[key] = estimate(a, b)
-        return dict(self._estimates[key])
+        pair = (place_id(a), place_id(b))
+        if pair not in self._cache:
+            # ponytail: one Routes API call per missing pair; run --warm so search rarely gets here
+            rows = fetch([a], [b], self._key) if self._key else []
+            if not rows:
+                raise TravelUnavailable(f"Google gave no travel time from {pair[0]} to {pair[1]}.")
+            self._save(rows)
+            self._cache[pair] = rows[0][2:]
+        minutes, meters, source = self._cache[pair]
+        return {"minutes": minutes, "km": round(meters / 1000, 1), "source": source}
 
     def minutes(self, a, b):
         return self.leg(a, b)["minutes"]
@@ -66,8 +69,9 @@ class Travel:
 def for_catalog(cat):
     """One Travel per catalog repository (one request), reading the cache once."""
     if not hasattr(cat, "_travel"):
+        from app.core.config import get_settings
         from app.repositories.travel_repo import TravelRepository
-        cat._travel = Travel(TravelRepository(cat.conn).get_all())
+        cat._travel = Travel(TravelRepository(cat.conn).get_all(), get_settings().google_maps_key, save)
     return cat._travel
 
 

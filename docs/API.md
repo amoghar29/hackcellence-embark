@@ -44,6 +44,7 @@ Every error has the same shape, so the UI can show `error` and highlight `field`
 | 422 | `CHANGE_REFUSED` | Phase 2: the change would break a travel rule | `reasons`, `blockers` |
 | 409 | `SOLD_OUT` | Booking: a flight or room was taken since the search | `part`: `flight` or `hotel` |
 | 409 | `IDEMPOTENCY_KEY_REUSED` | Booking: the `Idempotency-Key` already booked another package | |
+| 503 | `TRAVEL_UNAVAILABLE` | Google Routes API gave no travel time for a leg (no key, network down, no route). Try again | |
 
 ### Reasons and recommendations (422)
 
