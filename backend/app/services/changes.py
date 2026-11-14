@@ -107,6 +107,25 @@ def _drop_missed_visits(request, sel, cat):
     sel["attractions"] = [v for v in sel["attractions"] if fits(v)]
 
 
+def _replan_days(request, sel, days, cat):
+    """Plans each of `days` again the builder's way (builder.plan_day: least travel, earliest starts). A day
+    that no longer fits keeps its times, so the validator and the warnings still see it."""
+    reach = dict(zip([s["check_in"] for s in sel["stays"]], _reach_times(sel, cat)))
+    kids, move = bool(request["child_ages"]), travel.for_catalog(cat)
+    for day in days:
+        stay = next((s for s in sel["stays"] if s["check_in"] <= day < s["check_out"]), None)
+        mine = {v["attraction_id"]: v for v in sel["attractions"] if v["start"].date() == day}
+        if not stay or not mine:
+            continue
+        leave = reach[day] + timedelta(minutes=CHECKIN_BUFFER) if day in reach else None
+        found = builder.plan_day(cat.get_hotel(stay["hotel_id"]), [cat.get_attraction(aid) for aid in mine],
+                                 day, leave, move, kids)
+        if found:
+            rest = [v for v in sel["attractions"] if v["attraction_id"] not in mine]
+            sel["attractions"] = sorted(rest + [{**mine[a["attraction_id"]], "start": s} for a, s in found],
+                                        key=lambda v: v["start"])
+
+
 def _check_travel_day_visit(sel, a, start, cat):
     """Arrival and city-change days: one visit at most, starting after the traveler has reached the city,
     checked in (CHECKIN_BUFFER) and travelled from the hotel, and ending CLOSE_BUFFER before closing."""
@@ -151,6 +170,7 @@ def apply(request, selection, change, cat):
     sel = copy.deepcopy(selection)
     action = change.get("action")
     A, C = _travelers(request)
+    touched = []  # days whose visits are planned again after the change
 
     if action == "change_hotel":
         i = next((n for n, s in enumerate(sel["stays"]) if _stay_city(cat, s) == change.get("city")), None)
@@ -159,6 +179,8 @@ def apply(request, selection, change, cat):
             raise Refused([f"{change.get('city')} is not a city of this package."])
         if not hotel or not room or room["hotel_id"] != hotel["hotel_id"] or hotel["city"] != change["city"]:
             raise Refused([f"That hotel and room type are not available in {change['city']}."])
+        ci, co = sel["stays"][i]["check_in"], sel["stays"][i]["check_out"]
+        touched = [ci + timedelta(n) for n in range((co - ci).days)]
         sel["stays"][i].update(hotel_id=hotel["hotel_id"], room_id=room["room_id"],
                                rooms=_room_choice(request, sel["stays"][i], hotel, room, cat))
         if i == 0:
@@ -183,6 +205,7 @@ def apply(request, selection, change, cat):
             raise _refuse("ARRIVAL_SEATS" if arriving else "RETURN_SEATS",
                           f"{f['flight_number']} has {f['seats_left']} free seats; you need {A + C}.")
         sel[side]["flight_id"] = f["flight_id"]
+        touched = [day]
         _repick_airport_leg(request, sel, cat, arriving)  # the new landing or departure time moves the transfer
 
     elif action == "add_attraction":
@@ -208,14 +231,17 @@ def apply(request, selection, change, cat):
         aid = (change.get("item_id") or "").removeprefix("attraction-")
         if aid not in [v["attraction_id"] for v in sel["attractions"]]:
             raise Refused(["That attraction is not in the package."])
+        touched = [v["start"].date() for v in sel["attractions"] if v["attraction_id"] == aid]
         sel["attractions"] = [v for v in sel["attractions"] if v["attraction_id"] != aid]
 
     else:
         raise Refused(["Unknown action. Use change_hotel, change_flight, change_city_plan, add_attraction "
                        "or remove_attraction."])
 
+    _replan_days(request, sel, touched, cat)
     if action in ("change_hotel", "change_flight"):
-        _drop_missed_visits(request, sel, cat)
+        _drop_missed_visits(request, sel, cat)  # what still cannot be reached goes, then the day is planned again
+        _replan_days(request, sel, touched, cat)
 
     # the whole package is checked again; "1-2 attractions per full day" applies to the first package only
     problems = validator.validate(package.assemble(request, sel, cat), cat, first_package=False)

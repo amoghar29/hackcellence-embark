@@ -161,6 +161,7 @@ def _days(trip, selection, cat, tz):
         events.setdefault(when[:10], []).append(
             {"time": when[11:16], "kind": kind, "item_id": it["item_id"], "title": title, "timezone": zone})
 
+    reach_at, legs = _reach_times(selection, cat), [selection["arrival"]] + selection["intercity"]
     pickups = {}  # date -> earliest pickup that day, to check out in time
     for it in trip["items"]:
         if it["type"] == "transfer":
@@ -180,7 +181,19 @@ def _days(trip, selection, cat, tz):
             event(it["start"], "ATTRACTION", it, it["name"], tz)
         else:
             out_time = min(d["check_out_until"], pickups.get(it["end"], "99:99"))
-            event(f"{it['start']}T{d['check_in_from']}", "CHECK_IN", it, f"Check in: {it['name']}", tz)
+            # straight to the hotel on arrival, before any visit: check in when you get there, dropping bags
+            # if the room isn't ready yet (the hotel's early-arrival warning says so too)
+            n = int(it["item_id"].split("-")[1]) - 1
+            reach, pickup = reach_at[n], legs[n]["pickup"]
+            in_time, title = d["check_in_from"], f"Check in: {it['name']}"
+            if reach.date().isoformat() == it["start"]:
+                in_time = f"{reach:%H:%M}"
+                if in_time < d["check_in_from"]:
+                    title += f" (drop bags, room from {d['check_in_from']})"
+            elif reach.date().isoformat() > it["start"]:  # past midnight: list it right after the ride there
+                in_time = max(in_time, f"{pickup:%H:%M}") if pickup.date().isoformat() == it["start"] else "23:59"
+                title += f" (arriving {reach:%H:%M})"
+            event(f"{it['start']}T{in_time}", "CHECK_IN", it, title, tz)
             event(f"{it['end']}T{out_time}", "CHECK_OUT", it, f"Check out: {it['name']}", tz)
 
     night_city = {}
@@ -199,7 +212,7 @@ def _days(trip, selection, cat, tz):
         city = None if day_type in ("TRAVEL", "HOME") else trip["cities"][-1]["city"] if day_type == "RETURN" \
             else night_city[iso]
         days.append({"date": iso, "day_type": day_type, "city": city,
-                     "events": sorted(events.get(iso, []), key=lambda e: e["time"])})
+                     "events": sorted(events.get(iso, []), key=lambda e: (e["time"], e["kind"] == "CHECK_IN"))})
         day += timedelta(1)
     return days
 

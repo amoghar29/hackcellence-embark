@@ -7,7 +7,6 @@ import ItemCard from '../components/ItemCard'
 import DetailDrawer from '../components/DetailDrawer'
 import ChangeDrawer from '../components/ChangeDrawer'
 import AddAttractionDrawer from '../components/AddAttractionDrawer'
-import CityPlanDrawer from '../components/CityPlanDrawer'
 import DayPlan from '../components/DayPlan'
 import MapView from '../components/MapView'
 import { Modal, Paginated, Spinner, TYPE_META } from '../components/ui'
@@ -31,7 +30,6 @@ export default function PackagePage({ id, reference }) {
   const [detail, setDetail] = useState(null)
   const [changing, setChanging] = useState(null)
   const [adding, setAdding] = useState(null)
-  const [planning, setPlanning] = useState(false)
   const [dayOpen, setDayOpen] = useState(null) // date of the day popup; looked up again after every change
   const [summary, setSummary] = useState(null)
   const [confirm, setConfirm] = useState(false)
@@ -69,7 +67,7 @@ export default function PackagePage({ id, reference }) {
   function changed({ notices = [], ...next }) {
     setSummary({ ...changeSummary(pkg, next), notices, ids: next.items.filter(n => !pkg.items.some(o => o.item_id === n.item_id && o.catalog_id === n.catalog_id)).map(n => n.item_id) })
     savePackage(Number(id), next)
-    setPkg(next); setChanging(null); setAdding(null); setPlanning(false)
+    setPkg(next); setChanging(null); setAdding(null)
   }
 
   async function doBook() {
@@ -106,7 +104,6 @@ export default function PackagePage({ id, reference }) {
         <div className="flex flex-wrap items-center gap-2">
           <ol className="flex flex-wrap items-center gap-2" aria-label="Cities">{pkg.cities.map((c, i) =>
             <li key={c.city} className="flex items-center gap-2"><span className="rounded-full bg-brand-soft px-3 py-1 text-sm font-semibold">{c.city} · {c.nights}n</span>{i < pkg.cities.length - 1 && <span aria-hidden>→</span>}</li>)}</ol>
-          {canEdit && <button className="btn btn-xs btn-outline" onClick={() => setPlanning(true)}>Change cities</button>}
         </div>
         <dl className="divide-y divide-slate-100 text-sm">{TYPES.map(t => parts[t] > 0 && <div key={t} className="flex justify-between py-2">
           <dt className="flex items-center gap-2">{(() => { const M = TYPE_META[t]; return <M.icon size={15} /> })()}{TYPE_META[t].plural} <span className="text-slate-400">({itemsOf(pkg, t).length})</span></dt><dd className="font-medium">{money(parts[t])}</dd></div>)}</dl>
@@ -157,7 +154,6 @@ export default function PackagePage({ id, reference }) {
 
     {detail && <DetailDrawer item={detail} onClose={() => setDetail(null)} />}
     {adding && <AddAttractionDrawer pkg={pkg} date={adding} onClose={() => setAdding(null)} onChanged={changed} />}
-    {planning && <CityPlanDrawer pkg={pkg} onClose={() => setPlanning(false)} onChanged={changed} />}
     {changing && <ChangeDrawer pkg={pkg} item={changing} onClose={() => setChanging(null)} onChanged={changed} />}
     {confirm && <Modal label="Confirm booking" onClose={() => setConfirm(false)}>
       <div className="p-6"><h2 className="text-xl font-bold">Book this trip?</h2>

@@ -11,7 +11,7 @@ allows for travel time between the hotel and the visits (see _plan_visits). No o
 """
 import logging
 from datetime import timedelta
-from itertools import product
+from itertools import permutations, product
 
 from app.core.timeutil import DAYS, at, first_pickup, last_pickup, parse_hhmm
 from app.schemas.search import THEMES
@@ -397,6 +397,19 @@ def _schedule(hotel, stops, day, leave, move, kids):
         here, free = a, end + timedelta(minutes=travel.overrun(a) + STOP_BUFFER)
     back = out[-1][1] + timedelta(minutes=here["visit_minutes"] + travel.overrun(here) + move.minutes(here, hotel))
     return out if back <= at(day, DAY_END) else None
+
+
+def plan_day(hotel, stops, day, leave, move, kids):
+    """_schedule for the order of `stops` with the least travel (hotel, visits, hotel) that fits `day`, or None.
+    Used when a change touches a day, so the day is planned the same way as the first package."""
+    # ponytail: tries every order up to 4 visits (24), keeps the given order beyond that
+    route = lambda o: sum(move.minutes(a, b) for a, b in zip((hotel, *o), (*o, hotel)))
+    orders = permutations(stops) if len(stops) <= 4 else [tuple(stops)]
+    for order in sorted(orders, key=lambda o: (route(o), [a["attraction_id"] for a in o])):
+        found = _schedule(hotel, list(order), day, leave, move, kids)
+        if found:
+            return found
+    return None
 
 
 def minute_of(t, day):
